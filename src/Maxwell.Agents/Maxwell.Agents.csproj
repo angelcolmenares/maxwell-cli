@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Maxwell.Agents</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Core Microsoft Agent Framework -->
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.17.0" />
+
+    <!-- Provider wrapper. We use the OpenAI-flavoured toolkit package because
+         llama.cpp's server exposes an OpenAI-compatible /v1 endpoint, so it can be
+         targeted by pointing OpenAIConnection.Endpoint at the local llama.cpp server. -->
+    <PackageReference Include="AgentFrameworkToolkit.OpenAI" Version="1.17.0" />
+
+    <!-- Optional: turns the on-disk skills/{Agent}/ folders into agent tools + extra
+         instructions. If this package (or its expected shape) is unavailable in your
+         feed, remove this reference and the code in SkillLoader.cs - skills are an
+         additive, best-effort feature and are not required for the CLI to work. -->
+    <PackageReference Include="AgentSkillsDotNet" Version="*" />
+  </ItemGroup>
+
+</Project>
