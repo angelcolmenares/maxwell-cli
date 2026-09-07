@@ -10,12 +10,12 @@
 
   <ItemGroup>
     <!-- Core Microsoft Agent Framework -->
-    <PackageReference Include="Microsoft.Agents.AI" Version="1.17.0" />
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.20.0" />
 
     <!-- Provider wrapper. We use the OpenAI-flavoured toolkit package because
          llama.cpp's server exposes an OpenAI-compatible /v1 endpoint, so it can be
          targeted by pointing OpenAIConnection.Endpoint at the local llama.cpp server. -->
-    <PackageReference Include="AgentFrameworkToolkit.OpenAI" Version="1.17.0" />
+    <PackageReference Include="AgentFrameworkToolkit.OpenAI" Version="1.20.0" />
 
     <!-- Optional: turns the on-disk skills/{Agent}/ folders into agent tools + extra
          instructions. If this package (or its expected shape) is unavailable in your
