@@ -4,6 +4,7 @@ using System.Text;
 using Maxwell.Agents.Models;
 using Maxwell.Agents.Providers;
 using Maxwell.Agents.Storage;
+using Maxwell.Agents.Tools;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 
@@ -40,6 +41,7 @@ public sealed class ActiveSession
 /// </summary>
 public sealed class MaxwellSessionService
 {
+    private readonly MaxwellPaths _paths;
     private readonly MaxwellBootstrapper _bootstrapper;
     private readonly MaxwellConfigRepository _config;
     private readonly SessionStore _sessions;
@@ -48,6 +50,7 @@ public sealed class MaxwellSessionService
 
     public MaxwellSessionService(MaxwellPaths paths)
     {
+        _paths = paths;
         _bootstrapper = new MaxwellBootstrapper(paths);
         _config = new MaxwellConfigRepository(paths);
         _sessions = new SessionStore(paths);
@@ -83,11 +86,15 @@ public sealed class MaxwellSessionService
 
         var instructions = _config.LoadInstructions(agentName);
         var skillDirs = _config.GetSkillDirectories(agentName);
-        var (tools, extraInstructions) = _skillLoader.Load(skillDirs);
+        var (skillTools, extraInstructions) = _skillLoader.Load(skillDirs);
         if (!string.IsNullOrWhiteSpace(extraInstructions))
         {
             instructions = $"{instructions}\n\n{extraInstructions}";
         }
+
+        // Every agent gets read/bash/edit/write for free, rooted at the working
+        // directory Maxwell was launched from; skill-provided tools are added on top.
+        List<AITool> tools = [.. AgentToolset.CreateBuiltInTools(_paths.WorkingRoot), .. skillTools];
 
         var agent = _provider.CreateAgent(connectionConfig, agentConfig, instructions, tools);
 

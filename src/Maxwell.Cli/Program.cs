@@ -1,6 +1,5 @@
 using Maxwell.Agents;
 using Maxwell.Cli;
-
 CliOptions options;
 try
 {
