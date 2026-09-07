@@ -40,6 +40,13 @@ public sealed class MaxwellPaths
     public string HomeInstructionsDir => Path.Combine(HomeMaxwellDir, "instructions");
     public string ProjectsDir => Path.Combine(HomeMaxwellDir, "projects");
 
+    /// <summary>
+    /// {HomeDirectory}/.maxwell/plugins/{pluginFolder}/plugin.json + entry assembly.
+    /// Scanned by <see cref="Plugins.PluginLoader"/>; there is no working-directory
+    /// equivalent (unlike skills/instructions) - plugins are host-wide, not per-project.
+    /// </summary>
+    public string PluginsDir => Path.Combine(HomeMaxwellDir, "plugins");
+
     public string WorkingProjectFile => Path.Combine(WorkingMaxwellDir, "project.json");
     public string WorkingSkillsDir => Path.Combine(WorkingMaxwellDir, "skills");
     public string WorkingInstructionsDir => Path.Combine(WorkingMaxwellDir, "instructions");

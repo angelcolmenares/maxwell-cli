@@ -22,6 +22,7 @@ public sealed class MaxwellBootstrapper(MaxwellPaths paths)
         Directory.CreateDirectory(paths.HomeSkillsDir);
         Directory.CreateDirectory(paths.HomeInstructionsDir);
         Directory.CreateDirectory(paths.ProjectsDir);
+        Directory.CreateDirectory(paths.PluginsDir);
         Directory.CreateDirectory(paths.GetHomeAgentSkillsDir(DefaultAgentName));
 
         if (!File.Exists(paths.ConnectionsFile))

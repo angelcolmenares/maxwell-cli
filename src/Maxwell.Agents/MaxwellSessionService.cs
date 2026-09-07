@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Maxwell.Agents.Models;
+using Maxwell.Agents.Plugins;
 using Maxwell.Agents.Providers;
 using Maxwell.Agents.Storage;
 using Maxwell.Agents.Tools;
@@ -45,8 +46,15 @@ public sealed class MaxwellSessionService
     private readonly MaxwellBootstrapper _bootstrapper;
     private readonly MaxwellConfigRepository _config;
     private readonly SessionStore _sessions;
-    private readonly LlamaCppAgentProvider _provider = new();
     private readonly SkillLoader _skillLoader = new();
+
+    private readonly AgentProviderRegistry _providers = new();
+
+    /// <summary>Tools contributed by plugins' <see cref="IMaxwellPlugin.ConfigureTools"/>, loaded once at startup.</summary>
+    private readonly IReadOnlyList<AITool> _pluginTools;
+
+    /// <summary>Load results for every plugin folder found, for diagnostics (e.g. a future `plugins list` command).</summary>
+    public IReadOnlyList<LoadedPlugin> LoadedPlugins { get; }
 
     public MaxwellSessionService(MaxwellPaths paths)
     {
@@ -54,6 +62,16 @@ public sealed class MaxwellSessionService
         _bootstrapper = new MaxwellBootstrapper(paths);
         _config = new MaxwellConfigRepository(paths);
         _sessions = new SessionStore(paths);
+
+        // Built-in providers register first, so a plugin can deliberately
+        // override "OpenAI" (or add "Anthropic", "AzureOpenAI", ...) via
+        // last-registration-wins in AgentProviderRegistry.
+        _providers.Register("OpenAI", new OpenAIAgentProvider());
+
+        _bootstrapper.EnsureHomeStructure(); // plugins live under the Home dir; make sure it exists before scanning it
+        var pluginTools = new List<AITool>();
+        LoadedPlugins = new PluginLoader(_paths).LoadAll(_providers, pluginTools);
+        _pluginTools = pluginTools;
     }
 
     public async Task<ActiveSession> ResolveAsync(SessionResolutionRequest request)
@@ -93,10 +111,12 @@ public sealed class MaxwellSessionService
         }
 
         // Every agent gets read/bash/edit/write for free, rooted at the working
-        // directory Maxwell was launched from; skill-provided tools are added on top.
-        List<AITool> tools = [.. AgentToolset.CreateBuiltInTools(_paths.WorkingRoot), .. skillTools];
+        // directory Maxwell was launched from; plugin-contributed tools and the
+        // agent's own skill-provided tools are layered on top, in that order.
+        List<AITool> tools = [.. AgentToolset.CreateBuiltInTools(_paths.WorkingRoot), .. _pluginTools, .. skillTools];
 
-        var agent = _provider.CreateAgent(connectionConfig, agentConfig, instructions, tools);
+        var provider = _providers.Resolve(connectionConfig.ClientType);
+        var agent = provider.CreateAgent(connectionConfig, agentConfig, instructions, tools);
 
         AgentSession agentSession;
         SessionRecord record;

@@ -15,7 +15,7 @@ public sealed class AgentConfig
 
     /// <summary>
     /// Which OpenAI wire protocol to use: "ChatCompletion" or "ResponsesApi".
-    /// Optional - defaults to "ChatCompletion" in <see cref="Providers.LlamaCppAgentProvider"/>
+    /// Optional - defaults to "ChatCompletion" in <see cref="Providers.OpenAIAgentProvider"/>
     /// when omitted or unrecognized. llama.cpp's server only supports the
     /// Chat Completions API today: pointing it at the Responses API fails with
     /// "llama.cpp does not support 'previous_response_id'." Set this to

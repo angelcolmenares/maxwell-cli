@@ -38,6 +38,7 @@ maxwell-cli --agent MyAgent
   agents.json                # named agents -> {connection, model}
   skills/{AgentName}/        # optional: AgentSkills folder for this agent
   instructions/{AgentName}.md
+  plugins/{pluginFolder}/    # optional: plugin.json + entry assembly (see below)
   projects/{ProjectId}/
     sessions.json            # index: id, title, agent, timestamps
     {sessionId}.json         # full transcript + serialized AgentSession
@@ -54,4 +55,42 @@ histories). `{HomeDirectory}/.maxwell` is bootstrapped on first run with a
 default `llama-cpp` connection (`http://localhost:8080/v1`) and a default
 `Maxwell` agent — edit `connections.json`/`agents.json` to point at your actual
 llama.cpp server and model name.
+
+## Plugins
+
+Drop a folder under `{HomeDirectory}/.maxwell/plugins/` containing a
+`plugin.json` and a compiled entry assembly:
+
+```json
+{
+  "id": "maxwell-anthropic",
+  "version": "0.1.0",
+  "entryAssembly": "Maxwell.Plugin.Anthropic.dll"
+}
+```
+
+The assembly should reference `Maxwell.Agents` and contain a public type
+implementing `Maxwell.Agents.Plugins.IMaxwellPlugin`, with a public
+parameterless constructor:
+
+```csharp
+public sealed class AnthropicPlugin : IMaxwellPlugin
+{
+    public string Id => "maxwell-anthropic";
+
+    public void ConfigureProviders(IPluginProviderRegistry providers) =>
+        providers.Register("Anthropic", new AnthropicAgentProvider());
+
+    public void ConfigureTools(IPluginToolRegistry tools) { } // no extra tools
+}
+```
+
+Each plugin loads into its own collectible `AssemblyLoadContext`, so its
+private dependencies can't clash with Maxwell's or with another plugin's.
+Registered providers become usable by setting `clientType` in
+`connections.json` to whatever string the provider was registered under (e.g.
+`"Anthropic"`); registered tools are available to every agent, in addition to
+the built-in read/bash/edit/write tools and each agent's own skills. A plugin
+that fails to load (bad manifest, missing assembly, exception in its
+`Configure*` methods) is skipped rather than stopping Maxwell from starting.
 
