@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
+using Maxwell.Agents.Hooks;
 using Maxwell.Agents.Models;
 using Maxwell.Agents.Plugins;
 using Maxwell.Agents.Providers;
@@ -50,6 +51,9 @@ public sealed class MaxwellSessionService
 
     private readonly AgentProviderRegistry _providers = new();
 
+    /// <summary>The one hook pipeline for the process; populated by plugins' <see cref="IMaxwellPlugin.ConfigureHooks"/>.</summary>
+    private readonly HookPipeline _hooks = new();
+
     /// <summary>Tools contributed by plugins' <see cref="IMaxwellPlugin.ConfigureTools"/>, loaded once at startup.</summary>
     private readonly IReadOnlyList<AITool> _pluginTools;
 
@@ -70,7 +74,7 @@ public sealed class MaxwellSessionService
 
         _bootstrapper.EnsureHomeStructure(); // plugins live under the Home dir; make sure it exists before scanning it
         var pluginTools = new List<AITool>();
-        LoadedPlugins = new PluginLoader(_paths).LoadAll(_providers, pluginTools);
+        LoadedPlugins = new PluginLoader(_paths).LoadAll(_providers, pluginTools, _hooks);
         _pluginTools = pluginTools;
     }
 
@@ -115,6 +119,24 @@ public sealed class MaxwellSessionService
         // agent's own skill-provided tools are layered on top, in that order.
         List<AITool> tools = [.. AgentToolset.CreateBuiltInTools(_paths.WorkingRoot), .. _pluginTools, .. skillTools];
 
+        // SessionId isn't known yet (it's only assigned below once we know
+        // whether this is a new session or a resumed one), so HookSessionInfo is
+        // built now with a placeholder and patched in place afterwards - the
+        // wrapped tools close over this same instance, so by the time any tool
+        // actually runs (during StreamAsync, always after this method returns)
+        // it already has the real SessionId.
+        var hookSession = new HookSessionInfo { AgentName = agentName, ProjectId = project.Id, SessionId = string.Empty };
+        if (_hooks.HasHooks)
+        {
+            for (var i = 0; i < tools.Count; i++)
+            {
+                if (tools[i] is AIFunction function)
+                {
+                    tools[i] = new HookedAIFunction(function, _hooks, hookSession);
+                }
+            }
+        }
+
         var provider = _providers.Resolve(connectionConfig.ClientType);
         var agent = provider.CreateAgent(connectionConfig, agentConfig, instructions, tools);
 
@@ -145,6 +167,8 @@ public sealed class MaxwellSessionService
             isNewSession = true;
         }
 
+        hookSession.SessionId = record.SessionId;
+
         return new ActiveSession
         {
             Agent = agent,
@@ -171,6 +195,15 @@ public sealed class MaxwellSessionService
         string userMessage,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        var hookSession = new HookSessionInfo
+        {
+            AgentName = session.Record.Agent,
+            ProjectId = session.ProjectId,
+            SessionId = session.Record.SessionId,
+        };
+
+        userMessage = await _hooks.RunUserPromptAsync(hookSession, userMessage, cancellationToken);
+
         session.Record.Turns.Add(new ChatTurnRecord
         {
             Role = "user",
@@ -199,12 +232,14 @@ public sealed class MaxwellSessionService
                     case TextReasoningContent { Text.Length: > 0 } reasoningContent:
                         timeToFirstTokenSeconds ??= stopwatch.Elapsed.TotalSeconds;
                         reasoning.Append(reasoningContent.Text);
+                        await _hooks.RunResponseChunkAsync(hookSession, reasoningContent.Text, isReasoning: true, cancellationToken);
                         yield return new StreamChunk(reasoningContent.Text, IsReasoning: true);
                         break;
 
                     case TextContent { Text.Length: > 0 } textContent:
                         timeToFirstTokenSeconds ??= stopwatch.Elapsed.TotalSeconds;
                         fullReply.Append(textContent.Text);
+                        await _hooks.RunResponseChunkAsync(hookSession, textContent.Text, isReasoning: false, cancellationToken);
                         yield return new StreamChunk(textContent.Text, IsReasoning: false);
                         break;
                 }
@@ -228,13 +263,16 @@ public sealed class MaxwellSessionService
             };
         }
 
+        var assistantReply = fullReply.ToString();
+        var assistantReasoning = reasoning.Length > 0 ? reasoning.ToString() : null;
+
         session.Record.Turns.Add(new ChatTurnRecord
         {
             Role = "assistant",
-            Content = fullReply.ToString(),
+            Content = assistantReply,
             Timestamp = DateTimeOffset.UtcNow,
             Usage = usage,
-            Reasoning = reasoning.Length > 0 ? reasoning.ToString() : null,
+            Reasoning = assistantReasoning,
             Speed = speed,
         });
 
@@ -245,6 +283,8 @@ public sealed class MaxwellSessionService
         }
 
         session.Record.SerializedThread = await session.Agent.SerializeSessionAsync(session.Session);
+
+        await _hooks.RunTurnCompletedAsync(hookSession, userMessage, assistantReply, assistantReasoning, usage, speed, cancellationToken);
 
         _sessions.SaveRecord(session.ProjectId, session.Record);
     }

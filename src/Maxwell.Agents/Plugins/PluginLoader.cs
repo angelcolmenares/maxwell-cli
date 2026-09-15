@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Maxwell.Agents.Hooks;
 using Maxwell.Agents.Providers;
 using Microsoft.Extensions.AI;
 
@@ -10,8 +11,8 @@ public sealed record LoadedPlugin(string Id, string Version, string Directory, b
 /// <summary>
 /// Scans {HomeDirectory}/.maxwell/plugins/*/plugin.json, loads each plugin's
 /// entry assembly into its own <see cref="PluginLoadContext"/>, and gives every
-/// <see cref="IMaxwellPlugin"/> type it finds a chance to register providers and
-/// tools.
+/// <see cref="IMaxwellPlugin"/> type it finds a chance to register providers,
+/// tools, and hooks.
 ///
 /// Loading is best-effort per plugin: a malformed manifest, a missing assembly,
 /// or an exception thrown from a plugin's Configure* method is recorded against
@@ -21,7 +22,7 @@ public sealed record LoadedPlugin(string Id, string Version, string Directory, b
 /// </summary>
 public sealed class PluginLoader(MaxwellPaths paths)
 {
-    public IReadOnlyList<LoadedPlugin> LoadAll(AgentProviderRegistry providers, ICollection<AITool> pluginTools)
+    public IReadOnlyList<LoadedPlugin> LoadAll(AgentProviderRegistry providers, ICollection<AITool> pluginTools, HookPipeline hooks)
     {
         var results = new List<LoadedPlugin>();
 
@@ -32,13 +33,13 @@ public sealed class PluginLoader(MaxwellPaths paths)
 
         foreach (var pluginDir in Directory.EnumerateDirectories(paths.PluginsDir))
         {
-            results.Add(LoadOne(pluginDir, providers, pluginTools));
+            results.Add(LoadOne(pluginDir, providers, pluginTools, hooks));
         }
 
         return results;
     }
 
-    private static LoadedPlugin LoadOne(string pluginDir, AgentProviderRegistry providers, ICollection<AITool> pluginTools)
+    private static LoadedPlugin LoadOne(string pluginDir, AgentProviderRegistry providers, ICollection<AITool> pluginTools, HookPipeline hooks)
     {
         var folderName = Path.GetFileName(pluginDir);
         var manifestFile = Path.Combine(pluginDir, "plugin.json");
@@ -89,7 +90,7 @@ public sealed class PluginLoader(MaxwellPaths paths)
 
             foreach (var type in pluginTypes)
             {
-                InstantiateAndConfigure(type, providers, pluginTools, errors);
+                InstantiateAndConfigure(type, providers, pluginTools, hooks, errors);
             }
         }
         catch (Exception ex)
@@ -104,7 +105,7 @@ public sealed class PluginLoader(MaxwellPaths paths)
     }
 
     private static void InstantiateAndConfigure(
-        Type type, AgentProviderRegistry providers, ICollection<AITool> pluginTools, List<string> errors)
+        Type type, AgentProviderRegistry providers, ICollection<AITool> pluginTools, HookPipeline hooks, List<string> errors)
     {
         IMaxwellPlugin plugin;
         try
@@ -149,6 +150,15 @@ public sealed class PluginLoader(MaxwellPaths paths)
         catch (Exception ex)
         {
             errors.Add($"'{plugin.Id}'.ConfigureTools threw: {ex.Message}");
+        }
+
+        try
+        {
+            plugin.ConfigureHooks(hooks);
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"'{plugin.Id}'.ConfigureHooks threw: {ex.Message}");
         }
     }
 

@@ -1,3 +1,4 @@
+using Maxwell.Agents.Hooks;
 using Maxwell.Agents.Providers;
 using Microsoft.Extensions.AI;
 
@@ -13,6 +14,10 @@ namespace Maxwell.Agents.Plugins;
 /// DI container to satisfy plugin constructor dependencies, so plugins that need
 /// configuration should read it themselves (e.g. from their own file under the
 /// plugin's directory) rather than expecting it to be injected.
+///
+/// Every method below has a no-op default, so a plugin that only cares about
+/// e.g. hooks doesn't need to write two empty ConfigureProviders/ConfigureTools
+/// overrides just to satisfy the interface.
 /// </summary>
 public interface IMaxwellPlugin
 {
@@ -26,17 +31,22 @@ public interface IMaxwellPlugin
     /// <summary>
     /// Called once at startup. Register zero or more <see cref="IAgentProvider"/>s,
     /// e.g. <c>providers.Register("Anthropic", new AnthropicAgentProvider())</c>.
-    /// Implementations that don't add providers can leave this empty.
     /// </summary>
-    void ConfigureProviders(IPluginProviderRegistry providers);
+    void ConfigureProviders(IPluginProviderRegistry providers) { }
 
     /// <summary>
     /// Called once at startup. Register zero or more <see cref="AITool"/>s that
     /// should be available to every agent, alongside the built-in read/bash/edit/
     /// write tools and whatever the active agent's skills contribute.
-    /// Implementations that don't add tools can leave this empty.
     /// </summary>
-    void ConfigureTools(IPluginToolRegistry tools);
+    void ConfigureTools(IPluginToolRegistry tools) { }
+
+    /// <summary>
+    /// Called once at startup. Register zero or more <see cref="IChatHook"/>s that
+    /// observe or intervene in chat turns - see <see cref="IChatHook"/> for the
+    /// lifecycle they hook into.
+    /// </summary>
+    void ConfigureHooks(IPluginHookRegistry hooks) { }
 }
 
 /// <summary>Narrow write-only view of <see cref="AgentProviderRegistry"/> handed to plugins.</summary>

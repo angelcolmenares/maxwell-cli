@@ -94,3 +94,55 @@ the built-in read/bash/edit/write tools and each agent's own skills. A plugin
 that fails to load (bad manifest, missing assembly, exception in its
 `Configure*` methods) is skipped rather than stopping Maxwell from starting.
 
+## Hooks
+
+A plugin can also observe or intervene at specific points of a chat turn by
+implementing `Maxwell.Agents.Hooks.IChatHook` and registering it in
+`ConfigureHooks`:
+
+```csharp
+public sealed class AuditLogPlugin : IMaxwellPlugin
+{
+    public string Id => "maxwell-audit-log";
+
+    public void ConfigureHooks(IPluginHookRegistry hooks) => hooks.Register(new AuditLogHook());
+}
+
+public sealed class AuditLogHook : IChatHook
+{
+    public Task OnBeforeToolCallAsync(ToolCallContext context, CancellationToken cancellationToken)
+    {
+        if (context.ToolName == "bash" && context.Arguments.TryGetValue("command", out var cmd)
+            && cmd?.ToString()?.Contains("rm -rf") == true)
+        {
+            context.Block("bash commands containing 'rm -rf' are not allowed by policy.");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task OnTurnCompletedAsync(TurnCompletedContext context, CancellationToken cancellationToken)
+    {
+        Console.Error.WriteLine($"[{context.Session.SessionId}] {context.Usage?.TotalTokenCount} tokens");
+        return Task.CompletedTask;
+    }
+}
+```
+
+Every method on `IChatHook` has a no-op default, so a hook only implements the
+stage(s) it needs. The stages, in the order they fire for one user turn:
+
+| Stage | When | Can it change the outcome? |
+|---|---|---|
+| `OnUserPromptAsync` | Before the message is sent to the model | Yes — rewrite `context.Prompt` |
+| `OnBeforeToolCallAsync` | Immediately before a tool executes | Yes — mutate `context.Arguments`, or call `context.Block(reason)` to prevent execution |
+| `OnAfterToolCallAsync` | Immediately after a tool executes (or throws) | Yes — set `context.Result` to redact/transform what the model sees, or recover from an exception |
+| `OnResponseChunkAsync` | For each piece of streamed reply/reasoning text | No — observation only |
+| `OnTurnCompletedAsync` | Once the full turn is assembled, before it's persisted | No — observation only |
+
+`OnBeforeToolCallAsync`/`OnAfterToolCallAsync` are the only stages that can
+actually stop a tool from running: they wrap the tool's real invocation
+directly, whereas by the time a tool call is visible anywhere else it has
+already executed. Multiple hooks run in registration order; for blocking, the
+first hook to call `Block` wins.
+
