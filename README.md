@@ -52,9 +52,72 @@ maxwell-cli --agent MyAgent
 `ProjectId` is derived from the full, sanitized path of the working directory
 (so two folders named e.g. `app` in different locations get separate session
 histories). `{HomeDirectory}/.maxwell` is bootstrapped on first run with a
-default `llama-cpp` connection (`http://localhost:8080/v1`) and a default
-`Maxwell` agent — edit `connections.json`/`agents.json` to point at your actual
-llama.cpp server and model name.
+default `llama-cpp` connection (`http://localhost:8080/v1`) and two default
+agents — `Maxwell` (general-purpose) and `SkillSmith` (see below) — edit
+`connections.json`/`agents.json` to point at your actual llama.cpp server and
+model name.
+
+## Skills
+
+An agent's `skills/{AgentName}/` folder (Home and/or Working, see layout
+above) holds subfolders in the [Agent Skills format](https://agentskills.io) -
+the same open standard used by Claude Code, GitHub Copilot, and others.
+Maxwell doesn't invent its own skill format; `SkillLoader` hands each folder
+straight to `AgentSkillsDotNet`'s loader, so anything that's a valid Agent
+Skill elsewhere is a valid Agent Skill here.
+
+```
+skills/{AgentName}/
+  {skill-name}/
+    SKILL.md          # required — YAML frontmatter + Markdown instructions
+    scripts/...       # optional — code the agent can read and run itself
+    references/...    # optional — extra docs loaded on demand
+    assets/...         # optional — templates, sample configs, ...
+```
+
+`SKILL.md`:
+
+```markdown
+---
+name: pdf-processing
+description: Extract PDF text, fill forms, merge files. Use when handling PDFs.
+---
+# PDF processing
+
+Detailed instructions for the agent to follow when this skill is active...
+```
+
+`name` (max 64 chars, lowercase/numbers/hyphens, must match the folder name
+exactly) and `description` (max 1024 chars, non-empty) are required;
+`license`, `compatibility`, `metadata`, and `allowed-tools` are optional. See
+the [full specification](https://agentskills.io/specification) for exact
+constraints.
+
+### SkillSmith
+
+`SkillSmith` is a second default agent whose only job is writing new skills
+for your other agents. It only has `read`/`edit`/`write`/`validate_skill` —
+no `bash` — scoped to `{HomeDirectory}/.maxwell/skills/` rather than your
+working directory, and `validate_skill` re-parses whatever it just wrote
+through the real Agent Skills loader so it gets an honest pass/fail instead of
+guessing at YAML correctness:
+
+```bash
+maxwell-cli --agent SkillSmith
+> I want Maxwell to be able to summarize git log output. Make it a skill.
+```
+
+It will ask what it needs to (which agent, what triggers the skill), write
+`{HomeDirectory}/.maxwell/skills/Maxwell/{skill-name}/SKILL.md`, validate it,
+fix anything the validator flags, and tell you when it's ready — `Maxwell`
+picks it up automatically next time it resolves its skills, no restart
+needed. If you already had an `agents.json` before this update, add the
+`SkillSmith` entry by hand (the bootstrapper only seeds `agents.json` when the
+file doesn't exist yet):
+
+```json
+{ "name": "SkillSmith", "connection": "llama-cpp", "model": "gemma", "clientType": "ChatCompletion", "toolProfile": "SkillAuthoring" }
+```
 
 ## Plugins
 

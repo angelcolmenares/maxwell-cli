@@ -24,4 +24,13 @@ public sealed class AgentConfig
     /// reasoning/"thinking" content back on streamed replies.
     /// </summary>
     public string? ClientType { get; set; }
+
+    /// <summary>
+    /// Which built-in tool set this agent gets: "Filesystem" (default) gives
+    /// read/bash/edit/write rooted at the working directory; "SkillAuthoring"
+    /// gives read/edit/write/validate_skill rooted at {HomeDirectory}/.maxwell/skills/
+    /// instead, with no bash access - see <see cref="Tools.AgentToolset"/>. Skill-
+    /// and plugin-contributed tools are layered on top regardless of profile.
+    /// </summary>
+    public string? ToolProfile { get; set; }
 }

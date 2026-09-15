@@ -114,10 +114,21 @@ public sealed class MaxwellSessionService
             instructions = $"{instructions}\n\n{extraInstructions}";
         }
 
-        // Every agent gets read/bash/edit/write for free, rooted at the working
-        // directory Maxwell was launched from; plugin-contributed tools and the
-        // agent's own skill-provided tools are layered on top, in that order.
-        List<AITool> tools = [.. AgentToolset.CreateBuiltInTools(_paths.WorkingRoot), .. _pluginTools, .. skillTools];
+        // Every agent gets a tool profile for free (Filesystem by default; see
+        // AgentConfig.ToolProfile), rooted appropriately for that profile; plugin-
+        // contributed tools and the agent's own skill-provided tools are layered
+        // on top, in that order.
+        var profile = Enum.TryParse<AgentToolProfile>(agentConfig.ToolProfile, ignoreCase: true, out var parsedProfile)
+            ? parsedProfile
+            : AgentToolProfile.Filesystem;
+
+        IReadOnlyList<AITool> builtInTools = profile switch
+        {
+            AgentToolProfile.SkillAuthoring => AgentToolset.CreateSkillAuthoringTools(_paths.HomeSkillsDir),
+            _ => AgentToolset.CreateBuiltInTools(_paths.WorkingRoot),
+        };
+
+        List<AITool> tools = [.. builtInTools, .. _pluginTools, .. skillTools];
 
         // SessionId isn't known yet (it's only assigned below once we know
         // whether this is a new session or a resumed one), so HookSessionInfo is
