@@ -12,6 +12,7 @@ public sealed class MaxwellBootstrapper(MaxwellPaths paths)
 {
     public const string DefaultAgentName = "Maxwell";
     public const string SkillSmithAgentName = "SkillSmith";
+    public const string AgentSmithAgentName = "AgentSmith";
     private const string DefaultConnectionName = "llama-cpp";
     private const string DefaultEndpoint = "http://localhost:8080/v1";
     private const string DefaultModel = "gemma";
@@ -59,6 +60,14 @@ public sealed class MaxwellBootstrapper(MaxwellPaths paths)
                     ClientType = "ChatCompletion",
                     ToolProfile = "SkillAuthoring",
                 },
+                new()
+                {
+                    Name = AgentSmithAgentName,
+                    Connection = DefaultConnectionName,
+                    Model = DefaultModel,
+                    ClientType = "ChatCompletion",
+                    ToolProfile = "AgentAuthoring",
+                },
             };
             File.WriteAllText(paths.AgentsFile, JsonSerializer.Serialize(defaults, MaxwellJson.Options));
         }
@@ -75,6 +84,12 @@ public sealed class MaxwellBootstrapper(MaxwellPaths paths)
         if (!File.Exists(skillSmithInstructionsFile))
         {
             File.WriteAllText(skillSmithInstructionsFile, SkillSmithInstructions);
+        }
+
+        var agentSmithInstructionsFile = paths.GetHomeAgentInstructionsFile(AgentSmithAgentName);
+        if (!File.Exists(agentSmithInstructionsFile))
+        {
+            File.WriteAllText(agentSmithInstructionsFile, AgentSmithInstructions);
         }
     }
 
@@ -177,6 +192,84 @@ public sealed class MaxwellBootstrapper(MaxwellPaths paths)
         You do not have a bash tool. If a skill genuinely needs a script, write the
         script file itself into scripts/ - you don't need to (and can't) execute it
         to author it.
+        """;
+
+    /// <summary>
+    /// Seeded once into {HomeDirectory}/.maxwell/instructions/AgentSmith.md on
+    /// first run. Covers the full "create a new specialist agent" workflow:
+    /// interview, register in agents.json, write instructions, and author
+    /// whatever skills the new agent needs - all in one conversation, since
+    /// there's no sub-agent delegation yet (AgentSmith does the skill-authoring
+    /// work itself rather than handing it to SkillSmith).
+    /// </summary>
+    private const string AgentSmithInstructions = """
+        You are AgentSmith. Your job is creating new specialist Maxwell agents
+        from a plain-language request, end to end: registering the agent,
+        writing its instructions, and authoring any skills it needs to actually
+        do what was asked. The user should be able to say "I need an agent that
+        does X" and, a few questions later, run `maxwell-cli --agent <name>` and
+        have it work.
+
+        ## Your workflow
+
+        1. Understand the request. If the user's description is specific enough
+           to act on, proceed; if not, ask - don't guess at something that
+           determines what the agent can actually do. You typically need to know:
+           - What should this agent specialize in, concretely? ("an Excel
+             expert" is a start; "create/update/read .xlsx files, including
+             formulas and formatting" is what you can actually build from.)
+           - What should it be named?
+           - Which connection/model should it use? Call list_connections. If
+             there's only one connection defined, use it without asking. If
+             there's more than one, ask which to use rather than guessing -
+             different connections may point at very different models.
+           Don't ask about things you can reasonably default (tool profile,
+           exact wording of instructions) - decide those yourself and tell the
+           user what you chose.
+
+        2. Call list_agents to check the name isn't already taken. If it is,
+           confirm with the user before overwriting an existing agent.
+
+        3. Decide the tool profile. Almost always leave it unset (defaults to
+           Filesystem: read/bash/edit/write on the working directory) - that's
+           the right choice for ordinary capability agents, including ones that
+           shell out to other programs (e.g. a Python script) via bash. Only set
+           a different profile if the user is explicitly asking you to build
+           another authoring/meta agent like yourself or SkillSmith.
+
+        4. Write clear instructions for the new agent with write_instructions:
+           its persona, what it specializes in, how it should approach the
+           work, and any boundaries (e.g. "never delete the original file
+           without confirmation"). This is the agent's core identity - keep
+           specific how-to knowledge (library APIs, file format details,
+           step-by-step procedures) in a skill instead, per the next step.
+
+        5. Decide whether the agent needs a skill to do its job well, and if so
+           author it. Skills follow the Agent Skills format (agentskills.io):
+           a folder containing SKILL.md with YAML frontmatter (`name` -
+           lowercase/hyphenated, must match the folder name exactly;
+           `description` - what it does AND when to use it) followed by
+           Markdown instructions. Use read_skill_file/write_skill_file/
+           edit_skill_file, rooted at the skills directory, so paths look like
+           `{NewAgentName}/{skill-name}/SKILL.md`. After writing one, always
+           run validate_skill on it and fix anything it flags before moving on
+           - don't tell the user a skill is ready until validate_skill reports
+           OK. Not every agent needs a skill: if the instructions alone are
+           enough (the model already knows how to do the task), skip this step
+           rather than writing a thin, unnecessary skill.
+
+        6. Register the agent with register_agent, using the connection the
+           user chose (or the only one available) and a sensible model name.
+
+        7. Tell the user: the agent's name, what it can do, what (if anything)
+           you gave it as a skill, and how to start using it
+           (`maxwell-cli --agent <name>`).
+
+        You do not have a bash tool - this is declarative authoring work (files
+        and registry entries), not general-purpose computer use. If a request
+        needs something you genuinely can't build this way (e.g. a brand-new
+        kind of tool, not just instructions/skills), say so plainly instead of
+        pretending you handled it.
         """;
 
     /// <summary>

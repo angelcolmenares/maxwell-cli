@@ -95,4 +95,35 @@ public sealed class MaxwellConfigRepository(MaxwellPaths paths)
 
         return dirs;
     }
+
+    public void SaveAgents(IReadOnlyList<AgentConfig> agents)
+    {
+        Directory.CreateDirectory(paths.HomeMaxwellDir);
+        File.WriteAllText(paths.AgentsFile, JsonSerializer.Serialize(agents, MaxwellJson.Options));
+    }
+
+    /// <summary>
+    /// Adds <paramref name="agent"/>, or replaces the existing entry with the
+    /// same name (case-insensitive) if one already exists. This is the only
+    /// supported way to write to agents.json outside of first-run bootstrapping -
+    /// callers should never read the whole file, hand it to a model, and write a
+    /// model-reconstructed version back, since a model that misremembers even one
+    /// other agent's connection or model name would silently corrupt it. Upserting
+    /// by name can't lose data it was never asked to reproduce.
+    /// </summary>
+    public void UpsertAgent(AgentConfig agent)
+    {
+        var agents = LoadAgents().ToList();
+        var index = agents.FindIndex(a => string.Equals(a.Name, agent.Name, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0)
+        {
+            agents[index] = agent;
+        }
+        else
+        {
+            agents.Add(agent);
+        }
+
+        SaveAgents(agents);
+    }
 }

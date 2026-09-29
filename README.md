@@ -52,10 +52,10 @@ maxwell-cli --agent MyAgent
 `ProjectId` is derived from the full, sanitized path of the working directory
 (so two folders named e.g. `app` in different locations get separate session
 histories). `{HomeDirectory}/.maxwell` is bootstrapped on first run with a
-default `llama-cpp` connection (`http://localhost:8080/v1`) and two default
-agents — `Maxwell` (general-purpose) and `SkillSmith` (see below) — edit
-`connections.json`/`agents.json` to point at your actual llama.cpp server and
-model name.
+default `llama-cpp` connection (`http://localhost:8080/v1`) and three default
+agents — `Maxwell` (general-purpose), `SkillSmith`, and `AgentSmith` (see
+below) — edit `connections.json`/`agents.json` to point at your actual
+llama.cpp server and model name.
 
 ## Skills
 
@@ -117,6 +117,37 @@ file doesn't exist yet):
 
 ```json
 { "name": "SkillSmith", "connection": "llama-cpp", "model": "gemma", "clientType": "ChatCompletion", "toolProfile": "SkillAuthoring" }
+```
+
+### AgentSmith
+
+`AgentSmith` builds new specialist agents end to end from a plain-language
+request - registering the entry in `agents.json`, writing its instructions,
+and (if the task needs it) authoring a skill for it, all in one conversation.
+It doesn't delegate to `SkillSmith` for the skill-authoring part; it has the
+same skill-authoring tools itself (renamed `read_skill_file`/`write_skill_file`/
+`edit_skill_file` to avoid colliding with its instructions tools), plus
+`read_instructions`/`write_instructions` and `list_connections`/`list_agents`/
+`register_agent`. Like `SkillSmith`, no `bash` — this is declarative authoring
+(files + registry entries), not general-purpose computer use.
+
+```bash
+maxwell-cli --agent AgentSmith
+> Necesito un agente especialista en Excel, que pueda crear y actualizar archivos de Excel.
+```
+
+It will ask whatever it actually needs (a name, which connection/model to use
+if more than one exists) rather than guessing, register the new agent with a
+sensible default tool profile (`Filesystem` — read/bash/edit/write on your
+working directory, so it can shell out to whatever it needs to manipulate
+files), write its instructions, and write + validate a skill for it if the
+task calls for one. The new agent is usable immediately:
+`maxwell-cli --agent <name>`. `AgentSmith` itself defaults to `AgentAuthoring`
+for its tool profile - add it by hand the same way as `SkillSmith` if you
+already had an `agents.json`:
+
+```json
+{ "name": "AgentSmith", "connection": "llama-cpp", "model": "gemma", "clientType": "ChatCompletion", "toolProfile": "AgentAuthoring" }
 ```
 
 ## Plugins

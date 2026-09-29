@@ -125,6 +125,7 @@ public sealed class MaxwellSessionService
         IReadOnlyList<AITool> builtInTools = profile switch
         {
             AgentToolProfile.SkillAuthoring => AgentToolset.CreateSkillAuthoringTools(_paths.HomeSkillsDir),
+            AgentToolProfile.AgentAuthoring => AgentToolset.CreateAgentAuthoringTools(_paths, _config),
             _ => AgentToolset.CreateBuiltInTools(_paths.WorkingRoot),
         };
 

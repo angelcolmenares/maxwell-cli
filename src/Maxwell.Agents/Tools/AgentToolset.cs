@@ -12,6 +12,9 @@ public enum AgentToolProfile
 
     /// <summary>read/edit/write/validate_skill rooted at the skills directory, no bash. For <see cref="MaxwellBootstrapper.SkillSmithAgentName"/>-style skill-authoring agents.</summary>
     SkillAuthoring,
+
+    /// <summary>Skill-authoring tools plus instructions read/write and agents.json registration, no bash. For <see cref="MaxwellBootstrapper.AgentSmithAgentName"/>-style agent-authoring agents.</summary>
+    AgentAuthoring,
 }
 
 /// <summary>
@@ -72,6 +75,46 @@ public static class AgentToolset
                 description: "Create or overwrite a skill's files: SKILL.md, and optionally scripts/, references/, assets/."),
             AIFunctionFactory.Create(validate.Validate, name: "validate_skill",
                 description: "Validate a skill folder against the Agent Skills spec. Always run this after writing or editing SKILL.md."),
+        ];
+    }
+
+    /// <summary>
+    /// Everything <see cref="CreateSkillAuthoringTools"/> gives (renamed to
+    /// *_skill_file to avoid colliding with the instructions read/write tools
+    /// below), plus instructions read/write and agents.json registration - the
+    /// full set an agent that creates *other agents* needs. Still no bash, for
+    /// the same reason as SkillAuthoring: this is declarative authoring work
+    /// (files + JSON registry entries), not general-purpose computer use.
+    /// </summary>
+    public static IReadOnlyList<AITool> CreateAgentAuthoringTools(MaxwellPaths paths, MaxwellConfigRepository config)
+    {
+        var skillRead = new ReadFileTool(paths.HomeSkillsDir);
+        var skillEdit = new EditFileTool(paths.HomeSkillsDir);
+        var skillWrite = new WriteFileTool(paths.HomeSkillsDir);
+        var validate = new SkillValidationTool(paths.HomeSkillsDir);
+        var instructions = new InstructionsFileTool(paths);
+        var registry = new AgentRegistryTool(config);
+
+        return
+        [
+            AIFunctionFactory.Create(skillRead.Read, name: "read_skill_file",
+                description: "Read a file inside a skill folder. Use this to examine an existing skill before editing it."),
+            AIFunctionFactory.Create(skillEdit.Edit, name: "edit_skill_file",
+                description: "Make surgical edits to a skill's files (old text must match exactly)."),
+            AIFunctionFactory.Create(skillWrite.Write, name: "write_skill_file",
+                description: "Create or overwrite a skill's files: SKILL.md, and optionally scripts/, references/, assets/."),
+            AIFunctionFactory.Create(validate.Validate, name: "validate_skill",
+                description: "Validate a skill folder against the Agent Skills spec. Always run this after writing or editing a skill's SKILL.md."),
+            AIFunctionFactory.Create(instructions.ReadInstructions, name: "read_instructions",
+                description: "Read an agent's current system instructions, if any exist yet."),
+            AIFunctionFactory.Create(instructions.WriteInstructions, name: "write_instructions",
+                description: "Create or overwrite an agent's system instructions (persona, responsibilities, boundaries)."),
+            AIFunctionFactory.Create(registry.ListConnections, name: "list_connections",
+                description: "List available connections from connections.json, so you know what to register an agent against."),
+            AIFunctionFactory.Create(registry.ListAgents, name: "list_agents",
+                description: "List agents already defined in agents.json."),
+            AIFunctionFactory.Create(registry.Register, name: "register_agent",
+                description: "Add or update an agent's entry in agents.json."),
         ];
     }
 }
