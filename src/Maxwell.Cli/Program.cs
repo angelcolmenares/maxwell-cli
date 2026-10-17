@@ -17,14 +17,24 @@ var service = new MaxwellSessionService(paths);
 
 try
 {
-    var session = await service.ResolveAsync(new SessionResolutionRequest
+    switch (options.Command)
     {
-        SessionId = options.SessionId,
-        AgentName = options.AgentName,
-    });
+        case CliCommand.Work:
+            return await WorkConsole.RunWorkAsync(service, options);
 
-    await ChatConsole.RunAsync(service, session);
-    return 0;
+        case CliCommand.Tasks:
+            return WorkConsole.ListTasks(service);
+
+        default:
+            var session = await service.ResolveAsync(new SessionResolutionRequest
+            {
+                SessionId = options.SessionId,
+                AgentName = options.AgentName,
+            });
+
+            await ChatConsole.RunAsync(service, session);
+            return 0;
+    }
 }
 catch (Exception ex)
 {

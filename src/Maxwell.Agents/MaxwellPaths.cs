@@ -12,6 +12,7 @@ namespace Maxwell.Agents;
 ///     instructions/{AgentName}.md
 ///     projects/{ProjectId}/
 ///         sessions.json
+///         tasks.json
 ///         {sessionId}.json
 ///
 /// {WorkingDirectory}/.maxwell/
@@ -60,6 +61,9 @@ public sealed class MaxwellPaths
     public string GetProjectDir(string projectId) => Path.Combine(ProjectsDir, projectId);
     public string GetSessionsIndexFile(string projectId) => Path.Combine(GetProjectDir(projectId), "sessions.json");
     public string GetSessionFile(string projectId, string sessionId) => Path.Combine(GetProjectDir(projectId), $"{sessionId}.json");
+
+    /// <summary>The project's shared task board - see <see cref="Models.WorkItem"/>.</summary>
+    public string GetTasksFile(string projectId) => Path.Combine(GetProjectDir(projectId), "tasks.json");
 
     /// <summary>
     /// Derives a stable, filesystem-safe project id from the working directory's

@@ -16,6 +16,14 @@ public sealed class SessionResolutionRequest
 {
     public string? SessionId { get; init; }
     public string? AgentName { get; init; }
+
+    /// <summary>
+    /// When true (default), the agent's open tasks are appended to its
+    /// instructions so it knows about its queue from the first turn. `work`
+    /// turns this off: it runs one specific task per fresh session, and showing
+    /// the whole queue would invite the agent to start on the others.
+    /// </summary>
+    public bool IncludeTaskQueue { get; init; } = true;
 }
 
 public sealed class ActiveSession
@@ -47,6 +55,7 @@ public sealed class MaxwellSessionService
     private readonly MaxwellBootstrapper _bootstrapper;
     private readonly MaxwellConfigRepository _config;
     private readonly SessionStore _sessions;
+    private readonly TaskStore _tasks;
     private readonly SkillLoader _skillLoader = new();
 
     private readonly AgentProviderRegistry _providers = new();
@@ -60,12 +69,19 @@ public sealed class MaxwellSessionService
     /// <summary>Load results for every plugin folder found, for diagnostics (e.g. a future `plugins list` command).</summary>
     public IReadOnlyList<LoadedPlugin> LoadedPlugins { get; }
 
+    /// <summary>The task board store - used by <see cref="Work.WorkRunner"/> and the CLI's `tasks`/`work` commands.</summary>
+    public TaskStore Tasks => _tasks;
+
+    /// <summary>The id of the project (working directory) this process is running in, creating its .maxwell folders if needed.</summary>
+    public string GetProjectId() => _bootstrapper.EnsureWorkingStructure().Id;
+
     public MaxwellSessionService(MaxwellPaths paths)
     {
         _paths = paths;
         _bootstrapper = new MaxwellBootstrapper(paths);
         _config = new MaxwellConfigRepository(paths);
         _sessions = new SessionStore(paths);
+        _tasks = new TaskStore(paths);
 
         // Built-in providers register first, so a plugin can deliberately
         // override "OpenAI" (or add "Anthropic", "AzureOpenAI", ...) via
@@ -114,6 +130,11 @@ public sealed class MaxwellSessionService
             instructions = $"{instructions}\n\n{extraInstructions}";
         }
 
+        if (request.IncludeTaskQueue && BuildTaskQueueSection(project.Id, agentConfig.Name) is { } queueSection)
+        {
+            instructions = $"{instructions}\n\n{queueSection}";
+        }
+
         // Every agent gets a tool profile for free (Filesystem by default; see
         // AgentConfig.ToolProfile), rooted appropriately for that profile; plugin-
         // contributed tools and the agent's own skill-provided tools are layered
@@ -129,7 +150,10 @@ public sealed class MaxwellSessionService
             _ => AgentToolset.CreateBuiltInTools(_paths.WorkingRoot),
         };
 
-        List<AITool> tools = [.. builtInTools, .. _pluginTools, .. skillTools];
+        // The task board tools go to every agent regardless of profile.
+        var taskBoardTools = AgentToolset.CreateTaskBoardTools(_tasks, _config, project.Id, agentConfig.Name);
+
+        List<AITool> tools = [.. builtInTools, .. taskBoardTools, .. _pluginTools, .. skillTools];
 
         // SessionId isn't known yet (it's only assigned below once we know
         // whether this is a new session or a resumed one), so HookSessionInfo is
@@ -202,6 +226,41 @@ public sealed class MaxwellSessionService
     /// session.Record.Turns *before* this method returns, so callers can read
     /// session.Record.Turns[^1] right after draining the stream (see ChatConsole).
     /// </summary>
+    /// <summary>
+    /// The "you have mail" part of agent coordination: if tasks are waiting for
+    /// this agent, say so in its instructions so it walks into its first turn
+    /// already knowing. (Nothing pushes to a running agent - Maxwell is one process
+    /// per invocation - so "checked at session start" is the signal.)
+    /// </summary>
+    private string? BuildTaskQueueSection(string projectId, string agentName)
+    {
+        var open = _tasks.Load(projectId)
+            .Where(t => (t.Status is WorkItemStatus.Pending or WorkItemStatus.InProgress)
+                        && string.Equals(t.AssignedAgent, agentName, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(t => t.CreatedAt)
+            .ToList();
+
+        if (open.Count == 0)
+        {
+            return null;
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine("## Your task queue");
+        builder.AppendLine();
+        builder.AppendLine($"{open.Count} open task(s) are assigned to you on this project's task board:");
+        foreach (var task in open)
+        {
+            builder.AppendLine($"- {task.Id} [{task.Status}] from {task.CreatedBy}: {task.Description}");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine(
+            "Let the user know about them if it's relevant. To work on one: claim_task, do the work, then " +
+            "complete_task (or fail_task if you can't). `maxwell-cli work` also runs pending tasks unattended.");
+        return builder.ToString();
+    }
+
     public async IAsyncEnumerable<StreamChunk> StreamAsync(
         ActiveSession session,
         string userMessage,

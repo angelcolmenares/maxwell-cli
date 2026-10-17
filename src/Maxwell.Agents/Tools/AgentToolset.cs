@@ -117,4 +117,29 @@ public static class AgentToolset
                 description: "Add or update an agent's entry in agents.json."),
         ];
     }
+    /// <summary>
+    /// The task board tools (create_task, list_tasks, claim_task, complete_task,
+    /// fail_task). Unlike the profile-specific sets above, these are merged into
+    /// *every* agent's tools regardless of <see cref="AgentToolProfile"/> -
+    /// coordination is cross-cutting: any agent might delegate work or receive it.
+    /// </summary>
+    public static IReadOnlyList<AITool> CreateTaskBoardTools(
+        TaskStore store, MaxwellConfigRepository config, string projectId, string agentName)
+    {
+        var board = new TaskBoardTool(store, config, projectId, agentName);
+
+        return
+        [
+            AIFunctionFactory.Create(board.CreateTask, name: "create_task",
+                description: "Assign work to another agent via the project's task board. Records the task only; it runs later via `maxwell-cli work`."),
+            AIFunctionFactory.Create(board.ListTasks, name: "list_tasks",
+                description: "List tasks assigned to you, created by you (with results), or all tasks on this project's board."),
+            AIFunctionFactory.Create(board.ClaimTask, name: "claim_task",
+                description: "Mark a task assigned to you as in progress."),
+            AIFunctionFactory.Create(board.CompleteTask, name: "complete_task",
+                description: "Mark a task assigned to you as done, with a short result."),
+            AIFunctionFactory.Create(board.FailTask, name: "fail_task",
+                description: "Mark a task assigned to you as failed, with the reason."),
+        ];
+    }
 }
