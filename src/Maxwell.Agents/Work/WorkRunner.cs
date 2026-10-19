@@ -119,6 +119,10 @@ public sealed class WorkRunner(MaxwellSessionService service)
             {
                 AgentName = task.AssignedAgent,
                 IncludeTaskQueue = false,
+
+                // The work prompt tells the agent to finish with one of these, so load them directly
+                // instead of making an unattended agent search for them first.
+                PinnedTools = ["complete_task", "fail_task"],
             });
             tasks.Update(projectId, task.Id, t => t.SessionId = session.Record.SessionId);
 

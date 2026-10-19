@@ -142,4 +142,21 @@ public static class AgentToolset
                 description: "Mark a task assigned to you as failed, with the reason."),
         ];
     }
+
+    /// <summary>
+    /// search_tools + call_tool over <paramref name="catalog"/>: the two always-loaded
+    /// entry points to every tool that is *not* loaded by default. See <see cref="ToolCatalogTool"/>.
+    /// </summary>
+    public static IReadOnlyList<AITool> CreateToolDiscoveryTools(IReadOnlyList<AIFunction> catalog)
+    {
+        var discovery = new ToolCatalogTool(catalog);
+
+        return
+        [
+            AIFunctionFactory.Create(discovery.SearchTools, name: "search_tools",
+                description: "Find additional tools by describing what you need. Returns their descriptions and parameters."),
+            AIFunctionFactory.Create(discovery.CallTool, name: "call_tool",
+                description: "Run an additional tool found with search_tools, by name, with an arguments object."),
+        ];
+    }
 }

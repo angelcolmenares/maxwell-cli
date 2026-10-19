@@ -33,4 +33,13 @@ public sealed class AgentConfig
     /// and plugin-contributed tools are layered on top regardless of profile.
     /// </summary>
     public string? ToolProfile { get; set; }
+
+    /// <summary>
+    /// Whether this agent reaches its non-essential tools (task board, plugin tools) through
+    /// search_tools/call_tool instead of having them all loaded up front. Defaults to true
+    /// when omitted - it keeps the tool list in the model's context short. Set to false to
+    /// load every tool directly, e.g. for a capable hosted model where native function
+    /// calling for each tool is more reliable than the call_tool indirection.
+    /// </summary>
+    public bool? ToolDiscovery { get; set; }
 }

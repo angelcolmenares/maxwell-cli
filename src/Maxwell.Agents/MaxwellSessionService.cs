@@ -24,6 +24,14 @@ public sealed class SessionResolutionRequest
     /// the whole queue would invite the agent to start on the others.
     /// </summary>
     public bool IncludeTaskQueue { get; init; } = true;
+
+    /// <summary>
+    /// Names of discoverable tools to load directly for this session instead of leaving them
+    /// behind search_tools/call_tool. For tools the session's prompt tells the agent to use
+    /// (e.g. `work` pins complete_task/fail_task), so it doesn't have to search before it can
+    /// finish its job.
+    /// </summary>
+    public IReadOnlyList<string>? PinnedTools { get; init; }
 }
 
 public sealed class ActiveSession
@@ -130,15 +138,16 @@ public sealed class MaxwellSessionService
             instructions = $"{instructions}\n\n{extraInstructions}";
         }
 
-        if (request.IncludeTaskQueue && BuildTaskQueueSection(project.Id, agentConfig.Name) is { } queueSection)
+        var queueSection = request.IncludeTaskQueue ? BuildTaskQueueSection(project.Id, agentConfig.Name) : null;
+        if (queueSection is not null)
         {
             instructions = $"{instructions}\n\n{queueSection}";
         }
 
         // Every agent gets a tool profile for free (Filesystem by default; see
-        // AgentConfig.ToolProfile), rooted appropriately for that profile; plugin-
-        // contributed tools and the agent's own skill-provided tools are layered
-        // on top, in that order.
+        // AgentConfig.ToolProfile), rooted appropriately for that profile. These,
+        // plus the skill mechanism's own tools, are the agent's "core" tools:
+        // always loaded.
         var profile = Enum.TryParse<AgentToolProfile>(agentConfig.ToolProfile, ignoreCase: true, out var parsedProfile)
             ? parsedProfile
             : AgentToolProfile.Filesystem;
@@ -150,10 +159,41 @@ public sealed class MaxwellSessionService
             _ => AgentToolset.CreateBuiltInTools(_paths.WorkingRoot),
         };
 
-        // The task board tools go to every agent regardless of profile.
+        // Everything else (the task board, plugin-contributed tools) is "discoverable":
+        // not loaded up front, but reachable through search_tools/call_tool, so the
+        // model's context only carries the tools it actually needs.
         var taskBoardTools = AgentToolset.CreateTaskBoardTools(_tasks, _config, project.Id, agentConfig.Name);
+        IReadOnlyList<AITool> discoverableTools = [.. taskBoardTools, .. _pluginTools];
 
-        List<AITool> tools = [.. builtInTools, .. taskBoardTools, .. _pluginTools, .. skillTools];
+        List<AITool> coreTools = [.. builtInTools, .. skillTools];
+        List<AIFunction> catalogTools = [];
+
+        if (agentConfig.ToolDiscovery ?? true)
+        {
+            var pinned = new HashSet<string>(request.PinnedTools ?? [], StringComparer.OrdinalIgnoreCase);
+            if (queueSection is not null)
+            {
+                // The queue section above tells the agent to use these, so don't make it search first.
+                pinned.UnionWith(["claim_task", "complete_task", "fail_task"]);
+            }
+
+            foreach (var tool in discoverableTools)
+            {
+                // Only AIFunctions can be run through call_tool; any other kind of tool stays directly loaded.
+                if (tool is AIFunction function && !pinned.Contains(function.Name))
+                {
+                    catalogTools.Add(function);
+                }
+                else
+                {
+                    coreTools.Add(tool);
+                }
+            }
+        }
+        else
+        {
+            coreTools.AddRange(discoverableTools);
+        }
 
         // SessionId isn't known yet (it's only assigned below once we know
         // whether this is a new session or a resumed one), so HookSessionInfo is
@@ -162,15 +202,17 @@ public sealed class MaxwellSessionService
         // actually runs (during StreamAsync, always after this method returns)
         // it already has the real SessionId.
         var hookSession = new HookSessionInfo { AgentName = agentName, ProjectId = project.Id, SessionId = string.Empty };
-        if (_hooks.HasHooks)
+
+        List<AITool> tools = WrapWithHooks(coreTools, hookSession);
+
+        if (catalogTools.Count > 0)
         {
-            for (var i = 0; i < tools.Count; i++)
-            {
-                if (tools[i] is AIFunction function)
-                {
-                    tools[i] = new HookedAIFunction(function, _hooks, hookSession);
-                }
-            }
+            // Catalog tools are wrapped individually, so hooks see "bash"/"create_task"/... by
+            // their real names. The two meta-tools themselves are deliberately left unwrapped:
+            // wrapping call_tool too would fire every hook twice for one call.
+            var wrappedCatalog = WrapWithHooks(catalogTools, hookSession).Cast<AIFunction>().ToList();
+            tools.AddRange(AgentToolset.CreateToolDiscoveryTools(wrappedCatalog));
+            instructions = $"{instructions}\n\n{BuildToolDiscoverySection(wrappedCatalog)}";
         }
 
         var provider = _providers.Resolve(connectionConfig.ClientType);
@@ -226,6 +268,31 @@ public sealed class MaxwellSessionService
     /// session.Record.Turns *before* this method returns, so callers can read
     /// session.Record.Turns[^1] right after draining the stream (see ChatConsole).
     /// </summary>
+    private List<AITool> WrapWithHooks(IEnumerable<AITool> tools, HookSessionInfo hookSession) =>
+        tools
+            .Select(tool => _hooks.HasHooks && tool is AIFunction function
+                ? new HookedAIFunction(function, _hooks, hookSession)
+                : tool)
+            .ToList();
+
+    /// <summary>
+    /// Appended to an agent's instructions when some of its tools are behind search_tools. Lists
+    /// the tool *names* only (cheap), as a nudge: a small model won't search for a capability
+    /// it has no idea exists.
+    /// </summary>
+    private static string BuildToolDiscoverySection(IReadOnlyList<AIFunction> catalog) =>
+        $"""
+        ## Additional tools (on demand)
+
+        Besides your core tools, more tools are available on demand so they don't crowd your context:
+        {ToolCatalogTool.NameHint(catalog)}
+
+        When a task needs something your core tools can't do, call search_tools with a short description
+        of what you need (e.g. "assign work to another agent"). It returns each matching tool's
+        description and parameters. Then run the tool with call_tool(name, arguments). Don't guess a
+        tool's name or parameters - search first, then call.
+        """;
+
     /// <summary>
     /// The "you have mail" part of agent coordination: if tasks are waiting for
     /// this agent, say so in its instructions so it walks into its first turn
