@@ -22,7 +22,12 @@ public sealed record LoadedPlugin(string Id, string Version, string Directory, b
 /// </summary>
 public sealed class PluginLoader(MaxwellPaths paths)
 {
-    public IReadOnlyList<LoadedPlugin> LoadAll(AgentProviderRegistry providers, ICollection<AITool> pluginTools, HookPipeline hooks)
+    /// <param name="toolKeywords">Receives the search keywords plugins declare for their tools, keyed by tool name.</param>
+    public IReadOnlyList<LoadedPlugin> LoadAll(
+        AgentProviderRegistry providers,
+        ICollection<AITool> pluginTools,
+        IDictionary<string, IReadOnlyList<string>> toolKeywords,
+        HookPipeline hooks)
     {
         var results = new List<LoadedPlugin>();
 
@@ -33,13 +38,18 @@ public sealed class PluginLoader(MaxwellPaths paths)
 
         foreach (var pluginDir in Directory.EnumerateDirectories(paths.PluginsDir))
         {
-            results.Add(LoadOne(pluginDir, providers, pluginTools, hooks));
+            results.Add(LoadOne(pluginDir, providers, pluginTools, toolKeywords, hooks));
         }
 
         return results;
     }
 
-    private static LoadedPlugin LoadOne(string pluginDir, AgentProviderRegistry providers, ICollection<AITool> pluginTools, HookPipeline hooks)
+    private static LoadedPlugin LoadOne(
+        string pluginDir,
+        AgentProviderRegistry providers,
+        ICollection<AITool> pluginTools,
+        IDictionary<string, IReadOnlyList<string>> toolKeywords,
+        HookPipeline hooks)
     {
         var folderName = Path.GetFileName(pluginDir);
         var manifestFile = Path.Combine(pluginDir, "plugin.json");
@@ -90,7 +100,7 @@ public sealed class PluginLoader(MaxwellPaths paths)
 
             foreach (var type in pluginTypes)
             {
-                InstantiateAndConfigure(type, providers, pluginTools, hooks, errors);
+                InstantiateAndConfigure(type, providers, pluginTools, toolKeywords, hooks, errors);
             }
         }
         catch (Exception ex)
@@ -105,7 +115,12 @@ public sealed class PluginLoader(MaxwellPaths paths)
     }
 
     private static void InstantiateAndConfigure(
-        Type type, AgentProviderRegistry providers, ICollection<AITool> pluginTools, HookPipeline hooks, List<string> errors)
+        Type type,
+        AgentProviderRegistry providers,
+        ICollection<AITool> pluginTools,
+        IDictionary<string, IReadOnlyList<string>> toolKeywords,
+        HookPipeline hooks,
+        List<string> errors)
     {
         IMaxwellPlugin plugin;
         try
@@ -142,9 +157,13 @@ public sealed class PluginLoader(MaxwellPaths paths)
         {
             var registry = new CollectingToolRegistry();
             plugin.ConfigureTools(registry);
-            foreach (var tool in registry.Tools)
+            foreach (var (tool, keywords) in registry.Entries)
             {
                 pluginTools.Add(tool);
+                if (keywords.Count > 0)
+                {
+                    toolKeywords[tool.Name] = keywords;
+                }
             }
         }
         catch (Exception ex)
@@ -164,8 +183,8 @@ public sealed class PluginLoader(MaxwellPaths paths)
 
     private sealed class CollectingToolRegistry : IPluginToolRegistry
     {
-        public List<AITool> Tools { get; } = [];
+        public List<(AITool Tool, IReadOnlyList<string> Keywords)> Entries { get; } = [];
 
-        public void Register(AITool tool) => Tools.Add(tool);
+        public void Register(AITool tool, IReadOnlyList<string> keywords) => Entries.Add((tool, keywords));
     }
 }

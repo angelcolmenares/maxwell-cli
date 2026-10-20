@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using System.Text.Json;
+using Maxwell.Agents.Tools.Search;
 using Microsoft.Extensions.AI;
 
 namespace Maxwell.Agents.Tools;
@@ -23,32 +24,69 @@ namespace Maxwell.Agents.Tools;
 /// MaxwellSessionService), so hooks see the real tool name and arguments, not
 /// just "call_tool".
 /// </summary>
-public sealed class ToolCatalogTool(IReadOnlyList<AIFunction> catalog)
+public sealed class ToolCatalogTool
 {
     private const int MaxResultsCap = 10;
 
-    private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
+    private readonly IReadOnlyList<AIFunction> _catalog;
+    private readonly IToolSearchStrategy _strategy;
+    private readonly IReadOnlyList<ToolSearchDocument> _documents;
+
+    /// <param name="catalog">The tools reachable through search_tools/call_tool.</param>
+    /// <param name="strategy">Decides which catalog tools match a query. See <see cref="IToolSearchStrategy"/>.</param>
+    /// <param name="keywords">Extra search terms per tool name (synonyms the name/description lack). Optional.</param>
+    public ToolCatalogTool(
+        IReadOnlyList<AIFunction> catalog,
+        IToolSearchStrategy strategy,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? keywords = null)
     {
-        "a", "an", "the", "to", "for", "of", "and", "or", "in", "on", "with", "i", "me", "my",
-        "need", "want", "use", "tool", "tools", "that", "can", "how", "do", "is", "it",
-    };
+        _catalog = catalog;
+        _strategy = strategy;
+        _documents = catalog
+            .Select(tool => new ToolSearchDocument(
+                tool.Name,
+                tool.Description,
+                keywords is not null && keywords.TryGetValue(tool.Name, out var tags) ? tags : []))
+            .ToList();
+    }
 
     [Description(
         "Search the catalog of additional tools that are not loaded by default. Describe the capability " +
         "you need in a few words (e.g. \"assign work to another agent\"). Returns each matching tool's " +
         "description and parameters. Then run it with call_tool.")]
-    public string SearchTools(
+    public async Task<string> SearchTools(
         [Description("What you need to do, in a few plain words.")]
         string query,
         [Description("Maximum number of tools to return (default 5).")]
-        int maxResults = 5)
+        int maxResults = 5,
+        CancellationToken cancellationToken = default)
     {
         maxResults = Math.Clamp(maxResults, 1, MaxResultsCap);
 
-        var matches = Rank(query ?? string.Empty, maxResults);
+        IReadOnlyList<ToolSearchHit> hits;
+        try
+        {
+            hits = await _strategy.SearchAsync(query ?? string.Empty, _documents, maxResults, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // A strategy that depends on something external (an embedding server, ...) being down
+            // shouldn't leave the agent unable to find any tool: fall back to plain keyword search.
+            hits = await new LexicalToolSearchStrategy().SearchAsync(query ?? string.Empty, _documents, maxResults, cancellationToken);
+        }
+
+        var matches = hits
+            .Select(hit => _catalog.FirstOrDefault(t => string.Equals(t.Name, hit.Name, StringComparison.OrdinalIgnoreCase)))
+            .OfType<AIFunction>()
+            .ToList();
+
         if (matches.Count == 0)
         {
-            return $"No tool matched '{query}'. Available tools: {string.Join(", ", catalog.Select(t => t.Name).Order())}. " +
+            return $"No tool matched '{query}'. Available tools: {string.Join(", ", _catalog.Select(t => t.Name).Order())}. " +
                    "Search again using different words, or one of these names.";
         }
 
@@ -76,7 +114,7 @@ public sealed class ToolCatalogTool(IReadOnlyList<AIFunction> catalog)
         Dictionary<string, object?>? arguments = null,
         CancellationToken cancellationToken = default)
     {
-        var tool = catalog.FirstOrDefault(t => string.Equals(t.Name, name?.Trim(), StringComparison.OrdinalIgnoreCase));
+        var tool = _catalog.FirstOrDefault(t => string.Equals(t.Name, name?.Trim(), StringComparison.OrdinalIgnoreCase));
         if (tool is null)
         {
             return $"Error: no catalog tool named '{name}'. Call search_tools to find the right name.";
@@ -122,92 +160,6 @@ public sealed class ToolCatalogTool(IReadOnlyList<AIFunction> catalog)
         var names = catalog.Select(t => t.Name).Order().ToList();
         var shown = string.Join(", ", names.Take(maxNames));
         return names.Count > maxNames ? $"{shown}, ... (+{names.Count - maxNames} more)" : shown;
-    }
-
-    // ---- search ----
-
-    private List<AIFunction> Rank(string query, int max)
-    {
-        var terms = Tokenize(query).Select(Stem).Distinct().ToList();
-        var exact = query.Trim();
-
-        return catalog
-            .Select(tool => (tool, score: Score(tool, exact, terms)))
-            .Where(x => x.score > 0)
-            .OrderByDescending(x => x.score)
-            .ThenBy(x => x.tool.Name, StringComparer.OrdinalIgnoreCase)
-            .Take(max)
-            .Select(x => x.tool)
-            .ToList();
-    }
-
-    private static int Score(AIFunction tool, string exactQuery, List<string> terms)
-    {
-        if (string.Equals(tool.Name, exactQuery, StringComparison.OrdinalIgnoreCase))
-        {
-            return 100;
-        }
-
-        var nameStems = Tokenize(tool.Name).Select(Stem).ToHashSet();
-        var descriptionStems = Tokenize(tool.Description).Select(Stem).ToHashSet();
-
-        var score = 0;
-        foreach (var term in terms)
-        {
-            if (nameStems.Contains(term)) score += 4;
-            if (descriptionStems.Contains(term)) score += 2;
-        }
-
-        return score;
-    }
-
-    private static List<string> Tokenize(string text)
-    {
-        var tokens = new List<string>();
-        var current = new StringBuilder();
-
-        void Flush()
-        {
-            if (current.Length > 0)
-            {
-                var token = current.ToString().ToLowerInvariant();
-                if (!StopWords.Contains(token))
-                {
-                    tokens.Add(token);
-                }
-
-                current.Clear();
-            }
-        }
-
-        foreach (var c in text)
-        {
-            if (char.IsLetterOrDigit(c))
-            {
-                current.Append(c);
-            }
-            else
-            {
-                Flush(); // '_', '-', spaces, punctuation all separate words, so create_task -> create, task
-            }
-        }
-
-        Flush();
-        return tokens;
-    }
-
-    // Deliberately crude: strip one common suffix so "delegating"/"delegate"/"delegates" all meet at "delegat".
-    private static string Stem(string word)
-    {
-        foreach (var suffix in new[] { "ing", "ed", "es", "s", "e" })
-        {
-            if (word.Length - suffix.Length >= 3 && word.EndsWith(suffix, StringComparison.Ordinal))
-            {
-                return word[..^suffix.Length];
-            }
-        }
-
-        return word;
     }
 
     // ---- describing how to call a tool ----

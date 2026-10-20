@@ -7,6 +7,7 @@ using Maxwell.Agents.Plugins;
 using Maxwell.Agents.Providers;
 using Maxwell.Agents.Storage;
 using Maxwell.Agents.Tools;
+using Maxwell.Agents.Tools.Search;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 
@@ -74,6 +75,11 @@ public sealed class MaxwellSessionService
     /// <summary>Tools contributed by plugins' <see cref="IMaxwellPlugin.ConfigureTools"/>, loaded once at startup.</summary>
     private readonly IReadOnlyList<AITool> _pluginTools;
 
+    /// <summary>Search keywords per discoverable tool name: the task board's built-ins plus whatever plugins declared.</summary>
+    private readonly Dictionary<string, IReadOnlyList<string>> _toolKeywords = new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly IToolSearchStrategy _toolSearch;
+
     /// <summary>Load results for every plugin folder found, for diagnostics (e.g. a future `plugins list` command).</summary>
     public IReadOnlyList<LoadedPlugin> LoadedPlugins { get; }
 
@@ -83,13 +89,15 @@ public sealed class MaxwellSessionService
     /// <summary>The id of the project (working directory) this process is running in, creating its .maxwell folders if needed.</summary>
     public string GetProjectId() => _bootstrapper.EnsureWorkingStructure().Id;
 
-    public MaxwellSessionService(MaxwellPaths paths)
+    /// <param name="toolSearchStrategy">How search_tools matches queries to catalog tools. Defaults to <see cref="LexicalToolSearchStrategy"/>.</param>
+    public MaxwellSessionService(MaxwellPaths paths, IToolSearchStrategy? toolSearchStrategy = null)
     {
         _paths = paths;
         _bootstrapper = new MaxwellBootstrapper(paths);
         _config = new MaxwellConfigRepository(paths);
         _sessions = new SessionStore(paths);
         _tasks = new TaskStore(paths);
+        _toolSearch = toolSearchStrategy ?? new LexicalToolSearchStrategy();
 
         // Built-in providers register first, so a plugin can deliberately
         // override "OpenAI" (or add "Anthropic", "AzureOpenAI", ...) via
@@ -97,8 +105,13 @@ public sealed class MaxwellSessionService
         _providers.Register("OpenAI", new OpenAIAgentProvider());
 
         _bootstrapper.EnsureHomeStructure(); // plugins live under the Home dir; make sure it exists before scanning it
+        foreach (var (toolName, keywords) in AgentToolset.TaskBoardKeywords)
+        {
+            _toolKeywords[toolName] = keywords;
+        }
+
         var pluginTools = new List<AITool>();
-        LoadedPlugins = new PluginLoader(_paths).LoadAll(_providers, pluginTools, _hooks);
+        LoadedPlugins = new PluginLoader(_paths).LoadAll(_providers, pluginTools, _toolKeywords, _hooks);
         _pluginTools = pluginTools;
     }
 
@@ -211,7 +224,7 @@ public sealed class MaxwellSessionService
             // their real names. The two meta-tools themselves are deliberately left unwrapped:
             // wrapping call_tool too would fire every hook twice for one call.
             var wrappedCatalog = WrapWithHooks(catalogTools, hookSession).Cast<AIFunction>().ToList();
-            tools.AddRange(AgentToolset.CreateToolDiscoveryTools(wrappedCatalog));
+            tools.AddRange(AgentToolset.CreateToolDiscoveryTools(wrappedCatalog, _toolSearch, _toolKeywords));
             instructions = $"{instructions}\n\n{BuildToolDiscoverySection(wrappedCatalog)}";
         }
 

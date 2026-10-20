@@ -55,10 +55,21 @@ public interface IPluginProviderRegistry
     void Register(string clientType, IAgentProvider provider);
 }
 
-/// <summary>Collects the <see cref="AITool"/>s a plugin contributes.</summary>
+/// <summary>
+/// Collects the <see cref="AITool"/>s a plugin contributes. Plugin tools are not loaded into an
+/// agent's context up front: agents find them through search_tools, so a tool's name, description,
+/// and keywords are what make it findable - write them for that.
+/// </summary>
 public interface IPluginToolRegistry
 {
-    void Register(AITool tool);
+    /// <summary>
+    /// Registers a tool along with extra search terms: synonyms and phrases someone might use for
+    /// what it does that its name and description don't already contain (e.g. "hand off",
+    /// "dispatch" for a tool named create_job).
+    /// </summary>
+    void Register(AITool tool, IReadOnlyList<string> keywords);
+
+    void Register(AITool tool) => Register(tool, []);
 
     void Register(IEnumerable<AITool> tools)
     {

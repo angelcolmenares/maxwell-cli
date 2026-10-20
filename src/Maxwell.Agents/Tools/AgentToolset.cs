@@ -1,5 +1,6 @@
 using Maxwell.Agents.Models;
 using Maxwell.Agents.Storage;
+using Maxwell.Agents.Tools.Search;
 using Microsoft.Extensions.AI;
 
 namespace Maxwell.Agents.Tools;
@@ -117,6 +118,7 @@ public static class AgentToolset
                 description: "Add or update an agent's entry in agents.json."),
         ];
     }
+
     /// <summary>
     /// The task board tools (create_task, list_tasks, claim_task, complete_task,
     /// fail_task). Unlike the profile-specific sets above, these are merged into
@@ -128,28 +130,45 @@ public static class AgentToolset
     {
         var board = new TaskBoardTool(store, config, projectId, agentName);
 
+        // No description: arguments here, deliberately. Unlike the file tools above, these methods
+        // carry detailed [Description] attributes, which AIFunctionFactory uses when none is passed -
+        // and since these tools sit behind search_tools, that text is what gets searched and what
+        // the agent reads to learn how to call them. (A short override here would hide it.)
         return
         [
-            AIFunctionFactory.Create(board.CreateTask, name: "create_task",
-                description: "Assign work to another agent via the project's task board. Records the task only; it runs later via `maxwell-cli work`."),
-            AIFunctionFactory.Create(board.ListTasks, name: "list_tasks",
-                description: "List tasks assigned to you, created by you (with results), or all tasks on this project's board."),
-            AIFunctionFactory.Create(board.ClaimTask, name: "claim_task",
-                description: "Mark a task assigned to you as in progress."),
-            AIFunctionFactory.Create(board.CompleteTask, name: "complete_task",
-                description: "Mark a task assigned to you as done, with a short result."),
-            AIFunctionFactory.Create(board.FailTask, name: "fail_task",
-                description: "Mark a task assigned to you as failed, with the reason."),
+            AIFunctionFactory.Create(board.CreateTask, name: "create_task"),
+            AIFunctionFactory.Create(board.ListTasks, name: "list_tasks"),
+            AIFunctionFactory.Create(board.ClaimTask, name: "claim_task"),
+            AIFunctionFactory.Create(board.CompleteTask, name: "complete_task"),
+            AIFunctionFactory.Create(board.FailTask, name: "fail_task"),
         ];
     }
+
+    /// <summary>
+    /// Extra search terms for the task board tools - synonyms for what each does that its name and
+    /// description don't contain, so search_tools("delegate a job") finds create_task. Keyed by tool
+    /// name; see <see cref="Search.LexicalToolSearchStrategy"/> for how keywords weigh in.
+    /// </summary>
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> TaskBoardKeywords { get; } =
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["create_task"] = ["delegate", "dispatch", "hand off", "assign work", "schedule", "enqueue", "todo", "subtask", "workflow", "new job"],
+            ["list_tasks"] = ["queue", "inbox", "backlog", "pending", "progress", "status", "check results"],
+            ["claim_task"] = ["start", "begin", "start working", "begin working", "accept", "pick up", "take on"],
+            ["complete_task"] = ["finish", "finished", "done", "submit", "report result", "close"],
+            ["fail_task"] = ["abort", "give up", "blocked", "unable", "cannot", "error"],
+        };
 
     /// <summary>
     /// search_tools + call_tool over <paramref name="catalog"/>: the two always-loaded
     /// entry points to every tool that is *not* loaded by default. See <see cref="ToolCatalogTool"/>.
     /// </summary>
-    public static IReadOnlyList<AITool> CreateToolDiscoveryTools(IReadOnlyList<AIFunction> catalog)
+    public static IReadOnlyList<AITool> CreateToolDiscoveryTools(
+        IReadOnlyList<AIFunction> catalog,
+        IToolSearchStrategy searchStrategy,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? keywords = null)
     {
-        var discovery = new ToolCatalogTool(catalog);
+        var discovery = new ToolCatalogTool(catalog, searchStrategy, keywords);
 
         return
         [
