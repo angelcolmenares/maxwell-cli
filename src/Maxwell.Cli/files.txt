@@ -1,0 +1,8 @@
+bin
+ChatConsole.cs
+CliOptions.cs
+datetime.txt
+Maxwell.Cli.csproj
+obj
+Program.cs
+WorkConsole.cs

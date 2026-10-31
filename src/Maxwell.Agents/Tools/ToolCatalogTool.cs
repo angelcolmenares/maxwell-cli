@@ -34,28 +34,30 @@ public sealed class ToolCatalogTool
 
     /// <param name="catalog">The tools reachable through search_tools/call_tool.</param>
     /// <param name="strategy">Decides which catalog tools match a query. See <see cref="IToolSearchStrategy"/>.</param>
-    /// <param name="keywords">Extra search terms per tool name (synonyms the name/description lack). Optional.</param>
+    /// <param name="hints">Extra search signals per tool name (keywords and literal phrases the name/description lack). Optional.</param>
     public ToolCatalogTool(
         IReadOnlyList<AIFunction> catalog,
         IToolSearchStrategy strategy,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? keywords = null)
+        IReadOnlyDictionary<string, ToolSearchHints>? hints = null)
     {
         _catalog = catalog;
         _strategy = strategy;
         _documents = catalog
-            .Select(tool => new ToolSearchDocument(
-                tool.Name,
-                tool.Description,
-                keywords is not null && keywords.TryGetValue(tool.Name, out var tags) ? tags : []))
+            .Select(tool =>
+            {
+                var toolHints = hints is not null && hints.TryGetValue(tool.Name, out var found) ? found : ToolSearchHints.None;
+                return new ToolSearchDocument(tool.Name, tool.Description, toolHints.Keywords, toolHints.Phrases);
+            })
             .ToList();
     }
 
     [Description(
         "Search the catalog of additional tools that are not loaded by default. Describe the capability " +
         "you need in a few words (e.g. \"assign work to another agent\"). Returns each matching tool's " +
-        "description and parameters. Then run it with call_tool.")]
+        "description and parameters. Then run it with call_tool. Tool names and descriptions are in " +
+        "English, so write the query in English.")]
     public async Task<string> SearchTools(
-        [Description("What you need to do, in a few plain words.")]
+        [Description("What you need to do, in a few plain words, in English.")]
         string query,
         [Description("Maximum number of tools to return (default 5).")]
         int maxResults = 5,
@@ -87,7 +89,7 @@ public sealed class ToolCatalogTool
         if (matches.Count == 0)
         {
             return $"No tool matched '{query}'. Available tools: {string.Join(", ", _catalog.Select(t => t.Name).Order())}. " +
-                   "Search again using different words, or one of these names.";
+                   "Search again using different English words, or one of these names.";
         }
 
         var builder = new StringBuilder();

@@ -145,37 +145,22 @@ public static class AgentToolset
     }
 
     /// <summary>
-    /// Extra search terms for the task board tools - synonyms for what each does that its name and
-    /// description don't contain, so search_tools("delegate a job") finds create_task. Keyed by tool
-    /// name; see <see cref="Search.LexicalToolSearchStrategy"/> for how keywords weigh in.
-    /// </summary>
-    public static IReadOnlyDictionary<string, IReadOnlyList<string>> TaskBoardKeywords { get; } =
-        new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["create_task"] = ["delegate", "dispatch", "hand off", "assign work", "schedule", "enqueue", "todo", "subtask", "workflow", "new job"],
-            ["list_tasks"] = ["queue", "inbox", "backlog", "pending", "progress", "status", "check results"],
-            ["claim_task"] = ["start", "begin", "start working", "begin working", "accept", "pick up", "take on"],
-            ["complete_task"] = ["finish", "finished", "done", "submit", "report result", "close"],
-            ["fail_task"] = ["abort", "give up", "blocked", "unable", "cannot", "error"],
-        };
-
-    /// <summary>
     /// search_tools + call_tool over <paramref name="catalog"/>: the two always-loaded
     /// entry points to every tool that is *not* loaded by default. See <see cref="ToolCatalogTool"/>.
     /// </summary>
     public static IReadOnlyList<AITool> CreateToolDiscoveryTools(
         IReadOnlyList<AIFunction> catalog,
         IToolSearchStrategy searchStrategy,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? keywords = null)
+        IReadOnlyDictionary<string, ToolSearchHints>? hints = null)
     {
-        var discovery = new ToolCatalogTool(catalog, searchStrategy, keywords);
+        var discovery = new ToolCatalogTool(catalog, searchStrategy, hints);
 
+        // No description: arguments - the [Description] attributes on SearchTools/CallTool are the
+        // ones to use (they include "write the query in English"), and an override here would hide them.
         return
         [
-            AIFunctionFactory.Create(discovery.SearchTools, name: "search_tools",
-                description: "Find additional tools by describing what you need. Returns their descriptions and parameters."),
-            AIFunctionFactory.Create(discovery.CallTool, name: "call_tool",
-                description: "Run an additional tool found with search_tools, by name, with an arguments object."),
+            AIFunctionFactory.Create(discovery.SearchTools, name: "search_tools"),
+            AIFunctionFactory.Create(discovery.CallTool, name: "call_tool"),
         ];
     }
 }

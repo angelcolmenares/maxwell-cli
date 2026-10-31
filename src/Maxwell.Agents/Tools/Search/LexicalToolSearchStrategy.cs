@@ -3,7 +3,7 @@ using System.Text;
 namespace Maxwell.Agents.Tools.Search;
 
 /// <summary>
-/// Keyword search over tool names, declared keywords, and descriptions. No model, no network:
+/// Keyword search over tool names, declared hints, and descriptions. No model, no network:
 /// deterministic and instant, so it can be tested with a table of "query -> expected tool".
 ///
 /// How a query is scored:
@@ -11,26 +11,38 @@ namespace Maxwell.Agents.Tools.Search;
 ///     lowercased, stripped of stopwords, and reduced to Porter stems - "delegating" and
 ///     "delegates" both become "deleg", so inflections match.
 ///  2. Each query word is weighted by how *distinctive* it is across the catalog (IDF): a word
-///     that appears in every tool's text ("task", in a task board) tells you little; a word that
+///     that appears in every tool's text ("task", on a task board) tells you little; a word that
 ///     appears in one tool's text tells you a lot.
 ///  3. A document scores, for every query word it contains, that word's weight times where it
 ///     was found: in the name (4), in a single-word keyword (3), in the description (1) - summed
-///     when it appears in several places. A multi-word keyword counts only when the query contains
-///     all of its words ("hand off"), and then earns a bonus.
-///  4. A query that is exactly a tool's name returns just that tool.
-///  5. Only hits scoring at least <see cref="RelativeThreshold"/> of the best hit are kept, so
-///     one strong match isn't padded with weak ones that merely share a common word.
+///     when it appears in several places.
+///  4. Decisive evidence adds more and changes how many results come back (below): a query that is
+///     exactly a tool's name; a multi-word keyword whose words are all in the query ("hand off");
+///     or a literal phrase the query contains as written ("tasks i created"). Literal phrases are
+///     matched *without* stemming or stopword removal and with word order kept, which preserves
+///     what the stemmer erases - "tasks i created" (list them) vs. "create a task" (make one).
+///
+/// How many results come back depends on how sure the evidence is:
+///  - If the best hit has decisive evidence, only hits scoring at least <see cref="RelativeThreshold"/>
+///    of it are kept, so one clear match isn't padded with weak ones.
+///  - If the best hit rests only on loose word overlap, the query is treated as ambiguous and the
+///    bar drops to <see cref="AmbiguousRelativeThreshold"/>, so plausible runners-up come back too.
+///    The agent reads each description and chooses; a wrong top-1 is cheap when the right tool is
+///    also in the list, and fatal when it was cut.
 ///
 /// Limits: it matches words, not meaning. A synonym nobody listed as a keyword and that isn't in
-/// the description won't match - that's what per-tool keywords are for, and what an embedding-
-/// based <see cref="IToolSearchStrategy"/> would address. No typo tolerance.
+/// the description won't match - that's what hints are for, and what an embedding-based
+/// <see cref="IToolSearchStrategy"/> would address. No typo tolerance. English only: the stemmer
+/// and stopwords are English, and so are tool descriptions, so agents are told to write their
+/// queries in English.
 /// </summary>
 public sealed class LexicalToolSearchStrategy : IToolSearchStrategy
 {
     private const double NameWeight = 4;
     private const double KeywordWeight = 3;
     private const double DescriptionWeight = 1;
-    private const double PhraseBonus = 2;
+    private const double KeywordPhraseBonus = 2;
+    private const double LiteralPhraseBonus = 6;
     private const double ExactNameScore = 1000;
 
     private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
@@ -42,10 +54,16 @@ public sealed class LexicalToolSearchStrategy : IToolSearchStrategy
     };
 
     /// <summary>
-    /// Fraction of the best hit's score a hit needs to be returned. 0 returns everything that
-    /// matched at all; 1 returns only ties for the best.
+    /// Fraction of the best hit's score a hit needs to be returned when the best hit has decisive
+    /// evidence. 0 returns everything that matched at all; 1 returns only ties for the best.
     /// </summary>
     public double RelativeThreshold { get; init; } = 0.4;
+
+    /// <summary>
+    /// The same fraction when the best hit has only loose word-overlap evidence, i.e. the query is
+    /// ambiguous. Lower than <see cref="RelativeThreshold"/> so alternatives survive.
+    /// </summary>
+    public double AmbiguousRelativeThreshold { get; init; } = 0.25;
 
     public Task<IReadOnlyList<ToolSearchHit>> SearchAsync(
         string query,
@@ -69,7 +87,8 @@ public sealed class LexicalToolSearchStrategy : IToolSearchStrategy
         }
 
         var queryStems = Stems(trimmed).Distinct().ToList();
-        if (queryStems.Count == 0)
+        var paddedQuery = Pad(Words(trimmed));
+        if (queryStems.Count == 0 && paddedQuery.Length <= 2)
         {
             return [];
         }
@@ -87,10 +106,12 @@ public sealed class LexicalToolSearchStrategy : IToolSearchStrategy
                 return Math.Log(1 + (documentCount - df + 0.5) / (df + 0.5));
             });
 
-        var scored = new List<ToolSearchHit>();
+        var scored = new List<(string Name, double Score, bool Decisive)>();
         foreach (var doc in indexed)
         {
             var score = 0.0;
+            var decisive = false;
+
             foreach (var stem in queryStems)
             {
                 var fieldWeight =
@@ -104,13 +125,21 @@ public sealed class LexicalToolSearchStrategy : IToolSearchStrategy
             {
                 if (phrase.All(queryStems.Contains))
                 {
-                    score += PhraseBonus * phrase.Average(stem => weight[stem]);
+                    score += KeywordPhraseBonus * phrase.Average(stem => weight[stem]);
+                    decisive = true;
                 }
+            }
+
+            // One literal phrase is as good as several; don't let a long list of near-duplicate phrases inflate the score.
+            if (doc.LiteralPhrases.Any(paddedQuery.Contains))
+            {
+                score += LiteralPhraseBonus;
+                decisive = true;
             }
 
             if (score > 0)
             {
-                scored.Add(new ToolSearchHit(doc.Name, score));
+                scored.Add((doc.Name, score, decisive));
             }
         }
 
@@ -119,12 +148,15 @@ public sealed class LexicalToolSearchStrategy : IToolSearchStrategy
             return [];
         }
 
-        var best = scored.Max(h => h.Score);
+        var best = scored.MaxBy(h => h.Score);
+        var threshold = best.Decisive ? RelativeThreshold : AmbiguousRelativeThreshold;
+
         return scored
-            .Where(h => h.Score >= best * RelativeThreshold)
+            .Where(h => h.Score >= best.Score * threshold)
             .OrderByDescending(h => h.Score)
             .ThenBy(h => h.Name, StringComparer.OrdinalIgnoreCase)
             .Take(maxResults)
+            .Select(h => new ToolSearchHit(h.Name, h.Score))
             .ToList();
     }
 
@@ -133,6 +165,7 @@ public sealed class LexicalToolSearchStrategy : IToolSearchStrategy
         HashSet<string> NameStems,
         HashSet<string> KeywordStems,
         List<List<string>> KeywordPhrases,
+        List<string> LiteralPhrases,
         HashSet<string> DescriptionStems)
     {
         public bool Contains(string stem) =>
@@ -140,9 +173,16 @@ public sealed class LexicalToolSearchStrategy : IToolSearchStrategy
 
         public static IndexedDocument From(ToolSearchDocument document)
         {
-            var phrases = document.Keywords
+            var keywords = document.Keywords
                 .Select(k => Stems(k).ToList())
-                .Where(p => p.Count > 0)
+                .Where(k => k.Count > 0)
+                .ToList();
+
+            var literalPhrases = (document.Phrases ?? [])
+                .Select(p => Words(p).ToList())
+                .Where(words => words.Count > 0)
+                .Select(Pad)
+                .Distinct()
                 .ToList();
 
             return new IndexedDocument(
@@ -150,11 +190,15 @@ public sealed class LexicalToolSearchStrategy : IToolSearchStrategy
                 Stems(document.Name).ToHashSet(),
                 // Single-word keywords match on their own. The words of a multi-word keyword do NOT
                 // count individually: "start working" must not make a bare "work" query match.
-                phrases.Where(p => p.Count == 1).Select(p => p[0]).ToHashSet(),
-                phrases.Where(p => p.Count > 1).ToList(),
+                keywords.Where(k => k.Count == 1).Select(k => k[0]).ToHashSet(),
+                keywords.Where(k => k.Count > 1).ToList(),
+                literalPhrases,
                 Stems(document.Description).ToHashSet());
         }
     }
+
+    // " tasks i created " - padded with spaces so a phrase only matches on whole-word boundaries.
+    private static string Pad(IEnumerable<string> words) => " " + string.Join(' ', words) + " ";
 
     private static IEnumerable<string> Stems(string text) =>
         Words(text).Where(w => !StopWords.Contains(w)).Select(PorterStemmer.Stem);

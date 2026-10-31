@@ -4,10 +4,18 @@ namespace Maxwell.Agents.Tools.Search;
 /// <param name="Name">The tool's name, e.g. "create_task".</param>
 /// <param name="Description">The tool's description, as the model would see it.</param>
 /// <param name="Keywords">
-/// Extra search terms declared for the tool: synonyms and phrases a user or model might use that
-/// the name and description don't contain ("delegate", "hand off"). May be empty.
+/// Extra search terms declared for the tool: synonyms and related words a user or model might use
+/// that the name and description don't contain ("delegate", "hand off"). May be empty.
 /// </param>
-public sealed record ToolSearchDocument(string Name, string Description, IReadOnlyList<string> Keywords);
+/// <param name="Phrases">
+/// Literal phrases that, when the query contains them as written, strongly indicate this tool.
+/// See <see cref="ToolSearchHints.Phrases"/>. Null means none.
+/// </param>
+public sealed record ToolSearchDocument(
+    string Name,
+    string Description,
+    IReadOnlyList<string> Keywords,
+    IReadOnlyList<string>? Phrases = null);
 
 /// <param name="Name">The matching tool's name.</param>
 /// <param name="Score">Relevance; only meaningful for comparing hits from the same search.</param>

@@ -1,5 +1,6 @@
 using Maxwell.Agents.Hooks;
 using Maxwell.Agents.Providers;
+using Maxwell.Agents.Tools.Search;
 using Microsoft.Extensions.AI;
 
 namespace Maxwell.Agents.Plugins;
@@ -58,18 +59,21 @@ public interface IPluginProviderRegistry
 /// <summary>
 /// Collects the <see cref="AITool"/>s a plugin contributes. Plugin tools are not loaded into an
 /// agent's context up front: agents find them through search_tools, so a tool's name, description,
-/// and keywords are what make it findable - write them for that.
+/// and search hints are what make it findable - write them for that.
 /// </summary>
 public interface IPluginToolRegistry
 {
     /// <summary>
-    /// Registers a tool along with extra search terms: synonyms and phrases someone might use for
-    /// what it does that its name and description don't already contain (e.g. "hand off",
-    /// "dispatch" for a tool named create_job).
+    /// Registers a tool along with search hints: synonyms (<see cref="ToolSearchHints.Keywords"/>)
+    /// and literal phrases (<see cref="ToolSearchHints.Phrases"/>) for what it does that its name
+    /// and description don't already say.
     /// </summary>
-    void Register(AITool tool, IReadOnlyList<string> keywords);
+    void Register(AITool tool, ToolSearchHints hints);
 
-    void Register(AITool tool) => Register(tool, []);
+    /// <summary>Registers a tool with keyword hints only.</summary>
+    void Register(AITool tool, IReadOnlyList<string> keywords) => Register(tool, new ToolSearchHints { Keywords = keywords });
+
+    void Register(AITool tool) => Register(tool, ToolSearchHints.None);
 
     void Register(IEnumerable<AITool> tools)
     {
