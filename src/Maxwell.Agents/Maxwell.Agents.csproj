@@ -7,6 +7,17 @@
     <LangVersion>latest</LangVersion>
     <RootNamespace>Maxwell.Agents</RootNamespace>
   </PropertyGroup>
+  
+  <ItemGroup>
+    <!-- Skills that ship with Maxwell; BuiltInSkillSeeder copies them into ~/.maxwell/skills on first run.
+         LogicalName keeps the folder layout in the resource name (otherwise MSBuild mangles it). -->
+    <EmbeddedResource Include="BuiltInSkills\**\*.*" LogicalName="BuiltInSkills/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Lets the test project exercise internal types (e.g. the Porter stemmer). -->
+    <InternalsVisibleTo Include="Maxwell.Agents.Tests" />
+  </ItemGroup> 
 
   <ItemGroup>
     <!-- Core Microsoft Agent Framework -->

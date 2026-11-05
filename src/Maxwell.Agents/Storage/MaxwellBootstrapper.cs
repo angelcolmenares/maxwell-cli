@@ -91,6 +91,16 @@ public sealed class MaxwellBootstrapper(MaxwellPaths paths)
         {
             File.WriteAllText(agentSmithInstructionsFile, AgentSmithInstructions);
         }
+
+        // Skills that ship with Maxwell (e.g. web-browser). Optional extras: if the skills folder
+        // can't be written, that must not stop the CLI from starting.
+        try
+        {
+            new BuiltInSkillSeeder(paths).Seed();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
     }
 
     /// <summary>
