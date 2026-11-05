@@ -8,20 +8,36 @@ resumable, on-disk chat sessions.
 maxwell/
   Maxwell.sln
   src/
-    Maxwell.Agents/   class library: config, storage, provider, session orchestration
-    Maxwell.Cli/       console app: arg parsing + chat loop
+    Maxwell.Agents/   class library: config, storage, providers, sessions, tools, plugins, hooks, built-in skills
+    Maxwell.Cli/       console app: arg parsing, chat loop, `work` and `tasks` commands
+  tests/
+    Maxwell.Agents.Tests/   xunit tests
+    skill-scripts/          Node tests for the web-search skill's scripts
 ```
 
-## Build & run
+## Contents
+
+- [Build and run](#build-and-run)
+- [On-disk layout](#on-disk-layout)
+- [Skills](#skills): [SkillSmith](#skillsmith), [AgentSmith](#agentsmith), [Built-in skills](#built-in-skills)
+- **[Browsing and searching the web](#browsing-and-searching-the-web)**: [Quick start](#quick-start), [`web-browser`](#the-web-browser-skill), [`web-search`](#the-web-search-skill), [Setting up SearXNG](#setting-up-searxng)
+- [Tasks and `maxwell-cli work`](#tasks-and-maxwell-cli-work)
+- [Tool discovery](#tool-discovery) (how agents find tools; not web search)
+- [Plugins](#plugins)
+- [Hooks](#hooks)
+
+## Build and run
 
 ```bash
 dotnet build
 dotnet run --project src/Maxwell.Cli -- --agent Maxwell
 ```
 
-Run the tests (`dotnet test`) - they cover the tool search (stemmer, ranking, and a
-table of "what an agent might ask for -> which tool should come back") and the
-`search_tools`/`call_tool` round trip.
+Run the tests: `dotnet test` covers the tool search (stemmer, ranking, and a
+table of "what an agent might ask for -> which tool should come back"), the
+`search_tools`/`call_tool` round trip, and the built-in skills; and
+`node --test tests/skill-scripts/*.test.mjs` (Node.js 18+) tests the scripts that
+ship with the `web-search` skill against small local servers.
 
 To use it as the `maxwell-cli` command from any directory, per the spec:
 
@@ -45,6 +61,7 @@ maxwell-cli tasks           # list this project's task board
   skills/{AgentName}/        # optional: AgentSkills folder for this agent
   instructions/{AgentName}.md
   plugins/{pluginFolder}/    # optional: plugin.json + entry assembly (see below)
+  seeded-skills.txt         # built-in skills already copied here (see Built-in skills)
   projects/{ProjectId}/
     sessions.json            # index: id, title, agent, timestamps
     tasks.json               # the project's shared task board (see Tasks)
@@ -157,7 +174,233 @@ already had an `agents.json`:
 { "name": "AgentSmith", "connection": "llama-cpp", "model": "gemma", "clientType": "ChatCompletion", "toolProfile": "AgentAuthoring" }
 ```
 
-## Tasks & `maxwell-cli work`
+### Built-in skills
+
+Maxwell ships skills of its own (embedded from `src/Maxwell.Agents/BuiltInSkills/`) and
+copies them into `skills/{AgentName}/` on first run, so an agent has them without anyone
+writing them first. Currently: `web-browser` and `web-search`, both for `Maxwell` (see
+[Browsing and searching the web](#browsing-and-searching-the-web)).
+
+It's a one-time gift, not a sync. Each skill is recorded in `seeded-skills.txt`, so:
+
+- **a skill you delete stays deleted**;
+- **a skill you edit is never overwritten**;
+- **an existing folder with the same name wins**.
+
+A skill added in a later version is seeded next to the ones already handled, so updating
+Maxwell gives existing installs the new skills. To get a fresh copy of one, delete its
+folder *and* its line in `seeded-skills.txt`. To give another agent a built-in skill, copy
+the folder into that agent's `skills/{AgentName}/`.
+
+## Browsing and searching the web
+
+Two built-in skills give the `Maxwell` agent access to the web:
+
+| Skill | Use it to | Needs |
+|---|---|---|
+| [`web-browser`](#the-web-browser-skill) | open a page, read it, click, fill in forms, take screenshots or PDFs | Node.js 18+, `@playwright/cli`, a browser |
+| [`web-search`](#the-web-search-skill) | look something up online and answer with sources | Node.js 18+; optionally SearXNG (Docker); falls back to `web-browser` |
+
+Both are ordinary skills (a `SKILL.md`, plus two small scripts for search) that use the
+`bash` tool the agent already has. There is no browser code in Maxwell itself.
+
+### Quick start
+
+1. **Check Node.js** (18 or newer): `node --version`
+2. **Install the browser tool**, once:
+   ```bash
+   npm install -g @playwright/cli@latest
+   playwright-cli install-browser        # downloads Chromium
+   playwright-cli --version              # sanity check
+   ```
+3. *(Optional, recommended for search)* **set up SearXNG**: see
+   [Setting up SearXNG](#setting-up-searxng). Without it, search still works through the browser.
+4. **Check the skills are installed.** Maxwell copies them into your skills folder when it
+   starts (see [Built-in skills](#built-in-skills)):
+   ```bash
+   ls ~/.maxwell/skills/Maxwell          # PowerShell: dir $HOME\.maxwell\skills\Maxwell
+   # expected: web-browser  web-search
+   ```
+5. **Start Maxwell and ask in plain language**:
+   ```
+   maxwell-cli
+   > Open https://example.com and tell me the page title and the main heading.
+   > Search for the latest .NET 10 release notes and summarize them. Give me the sources.
+   ```
+
+There is no command to "run" a skill: you ask, and the agent decides to use it. If it
+doesn't, name it: *"Use the web-search skill to ..."* (small local models sometimes need
+that nudge). You can write in Spanish or any other language; the agent writes its search
+queries in English, because the skills and tool descriptions are in English.
+
+### The `web-browser` skill
+
+Teaches the agent to drive a real browser with
+[`playwright-cli`](https://github.com/microsoft/playwright-cli), Microsoft's Playwright
+command line built for coding agents.
+
+**What it can do:** open and navigate pages; read them; click, type, select and upload
+files; work with several tabs; take screenshots and save PDFs; run a little JavaScript to
+pull out a value.
+
+**Things to ask:**
+
+```
+> Open https://playwright.dev, find the Python install command, and tell me what it is.
+> Go to http://localhost:5000 and log in with user `test` / password `test123` (a dev account), then tell me what you see.
+> Take a full-page screenshot of https://example.com and save it as example.png.
+> Save https://example.com/docs as a PDF called docs.pdf.
+> Open the pricing page of <site> with a visible window so I can watch.
+```
+
+**What you'll see.** Each step is a `bash` call running `playwright-cli ...`, shown in the
+chat like any other tool call. The browser is headless (invisible) unless you ask to watch
+(`--headed`). The agent works from text **snapshots** of the page (a list of elements with
+refs like `e21`) rather than screenshots, so it works with models that can't see images.
+To keep context small it is taught to avoid reading whole pages: `find <text>` returns only
+matching elements, and `snapshot --depth=3`, `snapshot <ref>` and `snapshot --filename=...`
+take part of a page or save it to a file. Snapshots and screenshots are saved in your
+working directory, usually under `.playwright-cli/`; they may contain personal data, so
+don't commit that folder.
+
+**Managing browsers.** The agent should `close` the browser when it finishes. If one is
+left running, `playwright-cli list` shows open browsers, and `playwright-cli close-all` or
+`kill-all` clears them (headless sessions also shut down by themselves after an hour idle).
+
+**If something goes wrong:**
+
+| Symptom | Likely cause | What to do |
+|---|---|---|
+| The agent says `playwright-cli` isn't installed, or `command not found` | Not installed, or the terminal predates the install | `npm install -g @playwright/cli@latest`, then open a **new** terminal. The skill also tries `npx @playwright/cli` |
+| The browser won't start | Chromium hasn't been downloaded | `playwright-cli install-browser` |
+| It clicks the wrong thing or can't find an element | Element refs go stale when a page changes | Ask it to take a fresh snapshot and retry |
+| The page looks empty | Still loading, a cookie or consent banner, or a login wall | Ask it to snapshot again and describe what it sees |
+| It doesn't use the skill | Skill missing, or the model didn't pick it | Check step 4 of the quick start; say *"Use the web-browser skill to ..."* |
+| Browsers keep running after the chat | The agent forgot to close | `playwright-cli close-all` (or `kill-all`) |
+
+**Safety.** The skill tells the agent to treat page content as untrusted data (a page can
+try to give it instructions); to start every session fresh, with no saved logins; not to
+enter credentials you didn't give it for the task; and to ask before anything hard to undo
+(purchases, posting, deleting). In an unattended `maxwell-cli work` run it can't ask, so it
+fails the task instead. That is guidance to the model, **not enforcement**: `bash` isn't
+sandboxed, so for real enforcement use a [hook](#hooks) (for example, one that blocks `bash`
+commands you don't want).
+
+### The `web-search` skill
+
+Lets the agent look things up online and answer with sources. It has two layers, tried in
+order:
+
+1. **SearXNG** (preferred). [SearXNG](https://docs.searxng.org/) is a self-hosted search
+   aggregator with a JSON API, so the agent gets clean, compact results (title, URL,
+   snippet) from one command, with no browser. Used when the `SEARXNG_URL` environment
+   variable is set.
+2. **DuckDuckGo in the browser** (fallback). When SearXNG isn't configured or doesn't
+   answer, the agent opens a DuckDuckGo results page with `playwright-cli` and extracts the
+   result links.
+
+Then it reads the best two or three results and answers with the URLs it used. Reading a page
+uses a small script that prints its readable text (no scripts, styles or navigation, cut to
+a size limit) instead of dumping HTML into context; pages that need JavaScript go through
+`web-browser`.
+
+**Things to ask:**
+
+```
+> Search for the latest .NET 10 release notes and summarize them. Give me the sources.
+> Busca qué cambió en la última versión de Playwright y dame las fuentes.
+> Look up how to enable JSON output in SearXNG and show me the exact setting.
+> What is the current stable version of Node.js? Check the official site.
+```
+
+**What you'll see.** The agent runs a script and gets numbered results like this, then opens
+the best ones and answers:
+
+```
+1. Result title
+   https://example.org/page
+   A short snippet from the page...
+2. ...
+
+Showing 8 of 23 results.
+```
+
+#### Setting up SearXNG
+
+Optional, but recommended: it is faster, cheaper in context, and doesn't need a browser. Needs
+Docker.
+
+```bash
+mkdir -p ~/searxng
+docker run -d --name searxng -p 8888:8080 -v ~/searxng:/etc/searxng searxng/searxng
+# SearXNG only enables HTML output by default. Edit ~/searxng/settings.yml and under `search:` add
+#   formats:
+#     - html
+#     - json
+docker restart searxng
+curl -s "http://localhost:8888/search?q=test&format=json" | head -c 300    # should print JSON
+```
+
+The exact location of the settings file can vary with the image version; see the
+[SearXNG docs](https://docs.searxng.org/admin/installation.html). Then tell Maxwell where it
+is, **in the shell that launches `maxwell-cli`**:
+
+```bash
+export SEARXNG_URL=http://localhost:8888          # Git Bash / Linux / macOS
+$env:SEARXNG_URL = "http://localhost:8888"        # PowerShell
+```
+
+(On Windows, `setx SEARXNG_URL http://localhost:8888` makes it permanent for new terminals.)
+Maxwell's `bash` tool runs through Git Bash on Windows. The skill's scripts are **Node.js**,
+not Python, so the only runtime needed is the Node.js 18+ that `playwright-cli` already
+requires.
+
+**Check it works before asking Maxwell:**
+
+```bash
+node ~/.maxwell/skills/Maxwell/web-search/scripts/searxng-search.mjs "test"          # Git Bash / Linux / macOS
+node $HOME\.maxwell\skills\Maxwell\web-search\scripts\searxng-search.mjs "test"    # PowerShell
+```
+
+It should print numbered results. If not, the message says why; see the table below.
+
+**If something goes wrong:**
+
+| What you see | Meaning | What to do |
+|---|---|---|
+| `SEARXNG_URL is not set` | Maxwell can't see the variable | Set it in the shell that launches `maxwell-cli`, then restart it. Meanwhile the agent falls back to the browser |
+| `SEARXNG_URL must start with http://` | The address has no scheme | Use `http://localhost:8888`, not `localhost:8888` |
+| `Could not reach SearXNG at ...` | Container stopped, or wrong port | `docker ps`, then `docker start searxng`; check the `8888:8080` mapping |
+| `403 Forbidden`, or `did not return JSON` | JSON output isn't enabled, or the bot limiter refuses API calls | Add `json` to `search.formats` in `settings.yml`; check `server.limiter`; restart the container |
+| `No results ...` plus `Engines that did not respond: google (CAPTCHA)` | The engines SearXNG scrapes are blocking it | Try again later, or enable other engines in SearXNG. The agent rephrases up to three times, then falls back |
+| The DuckDuckGo fallback returns nothing, or a CAPTCHA | DuckDuckGo is blocking the IP | The agent stops and tells you. Open the same search once in your own browser, or set up SearXNG |
+| `web-search script not found` | The skill folder was moved, deleted, or is incomplete | Delete the `~/.maxwell/skills/Maxwell/web-search` folder **and** its line in `~/.maxwell/seeded-skills.txt`, then restart Maxwell to restore it |
+| `Very little text found` when reading a page | The page builds its content with JavaScript | The agent should use `web-browser` for it; ask for that if it doesn't |
+
+**What to expect.** Search engines are hostile to automation. A self-hosted SearXNG still
+scrapes engines such as Google and DuckDuckGo, which can answer with CAPTCHAs or block an
+IP, so results can be thinner on some days; the script says which engines didn't respond.
+The browser fallback can hit the same CAPTCHA, and the skill's rule is to **stop and tell
+you** rather than try to get around it (in an interactive chat it may offer to reopen the
+page in a visible window so you can solve it yourself). Queries go to the engines SearXNG
+aggregates, so the agent is told not to put secrets in them. As with the browser skill, the
+safety rules are guidance to the model, not enforcement. Some search engines' terms of
+service restrict automated queries: fine for light personal use, but worth knowing.
+
+### Using the web skills elsewhere
+
+- **In `maxwell-cli work` (unattended).** They work, but nobody can answer questions, so
+  anything needing confirmation (logins, purchases, posting) fails the task instead.
+  Example: have an agent `create_task` for another agent: *"Search for X and write a summary
+  to `notes/x.md`"*, then run `maxwell-cli work`.
+- **For another agent.** Copy the skill folder (for example
+  `~/.maxwell/skills/Maxwell/web-search`) into that agent's folder,
+  `~/.maxwell/skills/<AgentName>/`. (`AgentSmith` can create the agent and write its
+  instructions, but it has no `bash`, so it can't copy skill folders: do that step by hand.)
+- **Only for one project.** Put the folder in the project's `.maxwell/skills/<AgentName>/`
+  instead (both locations are checked).
+
+## Tasks and `maxwell-cli work`
 
 Agents can hand work to each other through a per-project task board
 (`tasks.json`). Every agent can reach five tools for it, whatever its tool
@@ -240,7 +483,7 @@ through `IPluginToolRegistry`. A tool's profile tools (e.g.
 that agent. Hooks still see the real tool name and arguments for catalog tools
 (`bash`, `create_task`, ...), not just `call_tool`.
 
-### How search works
+### How tool search works
 
 Matching is pluggable (`IToolSearchStrategy`); the default,
 `LexicalToolSearchStrategy`, is keyword search with no model or network, so it's
