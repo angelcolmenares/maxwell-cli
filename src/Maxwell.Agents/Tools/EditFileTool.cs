@@ -1,12 +1,20 @@
 using System.ComponentModel;
+using System.Text.RegularExpressions;
 
 namespace Maxwell.Agents.Tools;
 
 /// <summary>
 /// "edit" - a surgical find-and-replace: <paramref name="oldText"/> must match
-/// the file's raw content exactly (including whitespace) and must occur exactly
+/// the file's content exactly (including whitespace) and must occur exactly
 /// once, so the model is forced to include enough surrounding context to
 /// uniquely identify the change it wants rather than guessing at line numbers.
+///
+/// Line endings are the one thing matched leniently: a line break in oldText (LF or CRLF)
+/// matches either in the file. The model only ever sees lines through "read", which
+/// hides the difference, so without this a multi-line edit of a Windows (CRLF) file could
+/// never match, with an error that gave no hint why. And the edit changes nothing it wasn't
+/// asked to: every other line keeps its own line ending, text inserted by newText uses the
+/// line ending of the place it goes, and the file's encoding (BOM or not) is preserved.
 /// </summary>
 public sealed class EditFileTool(string rootDirectory)
 {
@@ -14,7 +22,8 @@ public sealed class EditFileTool(string rootDirectory)
         "Make a precise edit to an existing text file by replacing one exact, unique occurrence " +
         "of oldText with newText. oldText must match the file's actual content exactly (whitespace " +
         "included) and must appear exactly once - read the file first and include enough " +
-        "surrounding context to make the match unique. Use an empty newText to delete oldText.")]
+        "surrounding context to make the match unique. Line endings (CRLF or LF) don't have to match. " +
+        "Use an empty newText to delete oldText.")]
     public string Edit(
         [Description("Path to the file to edit, absolute or relative to the project's working directory.")]
         string path,
@@ -44,32 +53,38 @@ public sealed class EditFileTool(string rootDirectory)
         }
 
         string original;
+        TextFileFormat format;
         try
         {
-            original = File.ReadAllText(fullPath);
+            (original, format) = TextFileFormat.Read(fullPath);
         }
         catch (Exception ex)
         {
             return $"Error: could not read '{path}': {ex.Message}";
         }
 
-        var occurrences = CountOccurrences(original, oldText);
-        switch (occurrences)
+        var matches = LineEndingTolerantPattern(oldText).Matches(original);
+        switch (matches.Count)
         {
             case 0:
                 return $"Error: oldText was not found in {ToolPaths.Display(rootDirectory, fullPath)}. " +
                        "Re-read the file and make sure oldText matches exactly, including whitespace.";
             case > 1:
-                return $"Error: oldText occurs {occurrences} times in {ToolPaths.Display(rootDirectory, fullPath)}; " +
+                return $"Error: oldText occurs {matches.Count} times in {ToolPaths.Display(rootDirectory, fullPath)}; " +
                        "it must be unique. Include more surrounding context and try again.";
         }
 
-        var index = original.IndexOf(oldText, StringComparison.Ordinal);
-        var updated = string.Concat(original.AsSpan(0, index), newText, original.AsSpan(index + oldText.Length));
+        var match = matches[0];
+
+        // Line breaks inside the new text follow the place they replace; if that has none, the file's dominant style.
+        var newLine = match.Value.Contains("\r\n") ? "\r\n" : match.Value.Contains('\n') ? "\n" : format.NewLine;
+        var replacement = TextFileFormat.WithNewLine(newText, newLine);
+
+        var updated = string.Concat(original.AsSpan(0, match.Index), replacement, original.AsSpan(match.Index + match.Length));
 
         try
         {
-            File.WriteAllText(fullPath, updated);
+            format.Write(fullPath, updated);
         }
         catch (Exception ex)
         {
@@ -77,19 +92,17 @@ public sealed class EditFileTool(string rootDirectory)
         }
 
         return $"Edited {ToolPaths.Display(rootDirectory, fullPath)}: replaced 1 occurrence " +
-               $"({oldText.Length} chars -> {newText.Length} chars).";
+               $"({oldText.Length} chars -> {newText.Length} chars)." +
+               (format.UsesCrLf ? " Kept the file's CRLF line endings." : string.Empty);
     }
 
-    private static int CountOccurrences(string haystack, string needle)
+    /// <summary>
+    /// Matches <paramref name="oldText"/> literally, except that each line break in it (LF or CRLF)
+    /// matches either kind in the file.
+    /// </summary>
+    private static Regex LineEndingTolerantPattern(string oldText)
     {
-        var count = 0;
-        var index = 0;
-        while ((index = haystack.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
-        {
-            count++;
-            index += needle.Length;
-        }
-
-        return count;
+        var lines = oldText.Replace("\r\n", "\n").Split('\n');
+        return new Regex(string.Join(@"\r?\n", lines.Select(Regex.Escape)), RegexOptions.CultureInvariant);
     }
 }

@@ -6,6 +6,10 @@ namespace Maxwell.Agents.Tools;
 /// "write" - creates a new file or completely overwrites an existing one. For
 /// small, targeted changes to existing files prefer <see cref="EditFileTool"/>;
 /// this tool is for brand-new files or full rewrites.
+///
+/// A new file is written exactly as given. When overwriting, the file's existing line endings
+/// (CRLF or LF) and BOM are kept, so rewriting a Windows file doesn't turn every line of it
+/// into a change in a diff.
 /// </summary>
 public sealed class WriteFileTool(string rootDirectory)
 {
@@ -30,7 +34,8 @@ public sealed class WriteFileTool(string rootDirectory)
         }
 
         var existed = File.Exists(fullPath);
-
+        var format = TextFileFormat.Default;
+        var keptLineEndings = string.Empty;
         try
         {
             var directory = Path.GetDirectoryName(fullPath);
@@ -39,7 +44,21 @@ public sealed class WriteFileTool(string rootDirectory)
                 Directory.CreateDirectory(directory);
             }
 
-            File.WriteAllText(fullPath, content);
+            if (existed)
+            {
+                format = TextFileFormat.Read(fullPath).Format;
+                if (format.NewLineKnown)
+                {
+                    var converted = TextFileFormat.WithNewLine(content, format.NewLine);
+                    if (converted != content)
+                    {
+                        keptLineEndings = $" Kept the file's {(format.UsesCrLf ? "CRLF" : "LF")} line endings.";
+                        content = converted;
+                    }
+                }
+            }
+
+            format.Write(fullPath, content);
         }
         catch (Exception ex)
         {
@@ -48,6 +67,7 @@ public sealed class WriteFileTool(string rootDirectory)
 
         var lineCount = content.Length == 0 ? 0 : content.Split('\n').Length;
         var verb = existed ? "Overwrote" : "Created";
-        return $"{verb} {ToolPaths.Display(rootDirectory, fullPath)} ({content.Length} chars, {lineCount} lines).";
+        return $"{verb} {ToolPaths.Display(rootDirectory, fullPath)} ({content.Length} chars, {lineCount} lines)." +
+               keptLineEndings;
     }
 }
